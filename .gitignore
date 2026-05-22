@@ -1,0 +1,9 @@
+model/
+dist/
+build/
+*.spec
+.env
+main-linux-*
+main-windows-*
+*.pyc
+__pycache__

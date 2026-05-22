@@ -1,0 +1,48 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - name: linux-x86_64
+            runs-on: ubuntu-22.04
+          - name: linux-aarch64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils
+
+      - name: Install Python dependencies
+        run: |
+          pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile \
+            --add-binary "$(python -c 'import onnxruntime; print(onnxruntime.__path__[0])')/capi/*.so*:onnxruntime/capi" \
+            --collect-submodules torch \
+            --hidden-import=torch \
+            --hidden-import=torchaudio \
+            --hidden-import=funasr_onnx \
+            --hidden-import=funasr \
+            --hidden-import=librosa \
+            --hidden-import=soundfile \
+            main.py
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/main
