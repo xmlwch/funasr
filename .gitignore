@@ -7,3 +7,4 @@ funasr-*
 .claude/
 *.pyc
 __pycache__
+.vscode/
