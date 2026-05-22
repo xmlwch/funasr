@@ -10,8 +10,7 @@ RUN sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
 COPY main.py .
 COPY requirements.txt .
 
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt pyinstaller && \
     pyinstaller --onefile \
       --add-binary "$(python -c 'import onnxruntime; print(onnxruntime.__path__[0])')/capi/*.so*:onnxruntime/capi" \
