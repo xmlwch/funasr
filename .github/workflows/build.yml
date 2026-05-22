@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  linux:
     strategy:
       matrix:
         include:
@@ -32,3 +32,24 @@ jobs:
         with:
           name: ${{ matrix.name }}
           path: main-${{ matrix.name }}
+
+  windows:
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile --collect-all torch --collect-all torchaudio --hidden-import=funasr_onnx --hidden-import=funasr --hidden-import=librosa --hidden-import=soundfile main.py
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/main.exe
