@@ -4,5 +4,6 @@ build/
 *.spec
 .env
 funasr-*
+.claude/
 *.pyc
 __pycache__
