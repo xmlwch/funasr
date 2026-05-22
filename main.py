@@ -11,10 +11,8 @@ import threading
 import urllib.request
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
+from funasr.utils.postprocess_utils import rich_transcription_postprocess
 from funasr_onnx import SenseVoiceSmall
-
-
-_TAG_PATTERN = re.compile(r'<\|[^|]+\|>')
 
 
 class FunASR:
@@ -33,6 +31,7 @@ class FunASR:
                         base_dir = os.path.dirname(os.path.abspath(__file__))
                     model_dir = os.environ.get("FUNASR_MODEL_DIR", os.path.join(base_dir, "model"))
                     self.model = SenseVoiceSmall(model_dir, batch_size=1, quantize=True, intra_op_num_threads=4)
+                    # self.model = SenseVoiceSmall(model_dir, batch_size=10, quantize=True, intra_op_num_threads=64)
                     print("语音模型初始化成功")
 
     def __new__(cls, *args, **kwargs):
@@ -44,8 +43,7 @@ class FunASR:
 
     @staticmethod
     def _clean_text(text):
-        text = _TAG_PATTERN.sub('', text).strip()
-        return text
+        return rich_transcription_postprocess(text)
 
     def _generate_audio(self, audio_path):
         if not os.path.exists(audio_path):
