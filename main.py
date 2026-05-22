@@ -155,7 +155,7 @@ if __name__ == '__main__':
         try:
             urllib.request.urlopen(base + '/funasr/health', timeout=3)
         except Exception:
-            print('错误: 服务未启动，请先执行 ./main -host %s -port %d' % (args.host, args.port), file=sys.stderr)
+            print('错误: 服务未启动，请先执行 funasr -host %s -port %d' % (args.host, args.port), file=sys.stderr)
             sys.exit(1)
         req = json.dumps({'filepath': args.f}).encode('utf-8')
         resp = urllib.request.urlopen(base + '/funasr/identify', data=req, timeout=300)
