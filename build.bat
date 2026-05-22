@@ -34,11 +34,11 @@ if %errorlevel% neq 0 (
 
 echo [4/4] Extract binaries...
 docker create --name funasr-x86-tmp funasr-x86_64
-docker cp funasr-x86-tmp:/build/dist/main main-linux-x86_64
+docker cp funasr-x86-tmp:/build/dist/funasr funasr-linux-x86_64
 docker rm funasr-x86-tmp
 
 docker create --name funasr-arm-tmp funasr-aarch64
-docker cp funasr-arm-tmp:/build/dist/main main-linux-aarch64
+docker cp funasr-arm-tmp:/build/dist/funasr funasr-linux-aarch64
 docker rm funasr-arm-tmp
 
 echo.    Cleanup images...
@@ -47,6 +47,6 @@ docker builder prune -f 2>nul
 
 echo ============================================
 echo Build complete!
-dir main-linux-x86_64 main-linux-aarch64
+dir funasr-linux-x86_64 funasr-linux-aarch64
 echo ============================================
 pause

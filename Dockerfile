@@ -21,4 +21,5 @@ RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pyt
       --hidden-import=funasr \
       --hidden-import=librosa \
       --hidden-import=soundfile \
+      --name funasr \
       main.py

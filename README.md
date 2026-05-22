@@ -85,13 +85,13 @@ curl http://127.0.0.1:5001/funasr/health
 
 ```bash
 # Linux
-chmod +x main-linux-x86_64
+chmod +x funasr-linux-x86_64
 export FUNASR_MODEL_DIR=./model
-./main-linux-x86_64 -port 5001
+./funasr-linux-x86_64 -port 5001
 
 # Windows
 set FUNASR_MODEL_DIR=./model
-main-windows-x86_64.exe -port 5001
+funasr-windows-x86_64.exe -port 5001
 ```
 
 ## 环境变量

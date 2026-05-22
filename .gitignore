@@ -3,7 +3,6 @@ dist/
 build/
 *.spec
 .env
-main-linux-*
-main-windows-*
+funasr-*
 *.pyc
 __pycache__

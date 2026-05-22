@@ -24,14 +24,14 @@ jobs:
         run: |
           docker build --platform linux/${{ matrix.arch }} -t funasr-builder .
           docker create --name funasr-tmp funasr-builder
-          docker cp funasr-tmp:/build/dist/main ./main-${{ matrix.name }}
+          docker cp funasr-tmp:/build/dist/funasr ./funasr-${{ matrix.name }}
           docker rm funasr-tmp
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: main-${{ matrix.name }}
+          path: funasr-${{ matrix.name }}
 
   windows:
     runs-on: windows-2022
@@ -46,10 +46,10 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --onefile --collect-all torch --collect-all torchaudio --hidden-import=funasr_onnx --hidden-import=funasr --hidden-import=librosa --hidden-import=soundfile main.py
+          pyinstaller --onefile --name funasr --collect-all torch --collect-all torchaudio --hidden-import=funasr_onnx --hidden-import=funasr --hidden-import=librosa --hidden-import=soundfile main.py
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: windows-x86_64
-          path: dist/main.exe
+          path: dist/funasr.exe
