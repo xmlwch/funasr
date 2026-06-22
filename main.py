@@ -119,7 +119,7 @@ class PPOCR:
                     else:
                         base_dir = os.path.dirname(os.path.abspath(__file__))
                     ocr_model_dir = os.path.join(base_dir, "model", "paddleocr")
-                    self.ocr = PaddleOCR(
+                    self._engine = PaddleOCR(
                         use_angle_cls=True,
                         lang='ch',
                         det_model_dir=os.path.join(ocr_model_dir, 'det', 'ch_PP-OCRv4_det_infer'),
@@ -157,7 +157,7 @@ class PPOCR:
     def _generate_text(self, image_path):
         if not os.path.exists(image_path):
             raise FileNotFoundError("文件不存在: %s" % image_path)
-        result = self.ocr.ocr(image_path)
+        result = self._engine.ocr(image_path)
         if result is None or len(result) == 0:
             return ""
         texts = []
