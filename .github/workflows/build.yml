@@ -96,9 +96,19 @@ jobs:
 
             ## 模型文件
 
-            模型文件请从以下地址下载：
-            - ASR 模型: https://www.modelscope.cn/models/iic/SenseVoiceSmall
-            - OCR 模型: https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_det_infer.tar
+            ### ASR 模型（SenseVoiceSmall）
+            下载地址：https://www.modelscope.cn/models/iic/SenseVoiceSmall
+
+            ### OCR 模型（PaddleOCR PP-OCRv4）
+            ```bash
+            # 检测模型
+            curl -L -o det.tar https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_det_infer.tar
+            tar -xf det.tar && mv ch_PP-OCRv4_det_infer det/
+
+            # 识别模型
+            curl -L -o rec.tar https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_infer.tar
+            tar -xf rec.tar && mv ch_PP-OCRv4_rec_infer rec/
+            ```
 
             解压后目录结构：
             ```
