@@ -106,13 +106,11 @@ class FunASR:
 class PPOCR:
     _instance = None
     _lock = threading.Lock()
-    _initialized = False
 
     def __init__(self):
-        if not self.__class__._initialized:
+        if not hasattr(self, '_engine'):
             with self.__class__._lock:
-                if not self.__class__._initialized:
-                    self.__class__._initialized = True
+                if not hasattr(self, '_engine'):
                     from paddleocr import PaddleOCR
                     if getattr(sys, 'frozen', False):
                         base_dir = os.path.dirname(os.path.abspath(sys.executable))
