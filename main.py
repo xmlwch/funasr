@@ -101,9 +101,9 @@ class PPOCR:
                         use_angle_cls=True,
                         lang='ch',
                         use_pdserving=False,
-                        det_model_dir=os.path.join(ocr_model_dir, 'det'),
-                        rec_model_dir=os.path.join(ocr_model_dir, 'rec'),
-                        cls_model_dir=os.path.join(ocr_model_dir, 'cls'),
+                        det_model_dir=os.path.join(ocr_model_dir, 'det', 'ch_PP-OCRv4_det_infer'),
+                        rec_model_dir=os.path.join(ocr_model_dir, 'rec', 'ch_PP-OCRv4_rec_infer'),
+                        cls_model_dir=os.path.join(ocr_model_dir, 'cls', 'ch_ppocr_mobile_v2.0_cls_infer'),
                         show_log=False
                     )
                     print("OCR 模型初始化成功")
