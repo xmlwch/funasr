@@ -81,6 +81,65 @@ class FunASR:
                 os.unlink(tmp_path)
 
 
+class PPOCR:
+    _instance = None
+    _lock = threading.Lock()
+    _initialized = False
+
+    def __init__(self):
+        if not self.__class__._initialized:
+            with self.__class__._lock:
+                if not self.__class__._initialized:
+                    self.__class__._initialized = True
+                    from rapidocr_onnxruntime import RapidOCR
+                    self.ocr = RapidOCR()
+                    print("OCR 模型初始化成功")
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            with cls._lock:
+                if not cls._instance:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @staticmethod
+    def _download_http(url):
+        fd, tmp_path = tempfile.mkstemp(suffix="_image")
+        os.close(fd)
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp, open(tmp_path, "wb") as f:
+                shutil.copyfileobj(resp, f)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+        return tmp_path
+
+    def _generate_text(self, image_path):
+        if not os.path.exists(image_path):
+            raise FileNotFoundError("文件不存在: %s" % image_path)
+        result, elapse = self.ocr(image_path)
+        if result is None:
+            return ""
+        # 合并所有识别结果，用换行分隔
+        texts = [item[1] for item in result]
+        return "\n".join(texts)
+
+    async def get_text_content(self, image_path):
+        tmp_path = None
+        try:
+            loop = asyncio.get_running_loop()
+            if image_path.startswith(("http://", "https://")):
+                real_path = await loop.run_in_executor(None, self._download_http, image_path)
+                tmp_path = real_path
+            else:
+                real_path = image_path
+            text = await loop.run_in_executor(None, self._generate_text, real_path)
+            return text
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+
 class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
