@@ -14,10 +14,10 @@ RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pyt
     pip install --no-cache-dir -r requirements.txt pyinstaller
 
 RUN FUNASR_PATH=$(python -c 'import funasr; print(funasr.__path__[0])') && \
-    FUNASR_DATA="$FUNASR_PATH/version.txt" && \
+    mkdir -p /build/funasr_pkg && \
+    cp -r "$FUNASR_PATH" /build/funasr_pkg/funasr && \
     pyinstaller --onefile \
-      --add-binary "$(python -c 'import onnxruntime; print(onnxruntime.__path__[0])')/capi/*.so*:onnxruntime/capi" \
-      --add-data "$FUNASR_DATA:funasr" \
+      --add-data /build/funasr_pkg/funasr/version.txt:funasr \
       --collect-submodules torch \
       --hidden-import=torch \
       --hidden-import=torchaudio \
