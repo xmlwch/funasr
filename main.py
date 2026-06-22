@@ -32,6 +32,8 @@ if sys.platform == 'win32':
 # 禁用 oneDNN 避免兼容性问题
 os.environ['FLAGS_floating_ops_validation'] = 'false'
 os.environ['MKLDNN_ENABLED'] = '0'
+os.environ['FLAGS_enable_fast_matmul'] = 'false'
+os.environ['FLAGS_fused_ops_cache_max_size'] = '0'
 
 # 生产环境保护配置
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 最大请求体 100MB
@@ -144,8 +146,7 @@ class PPOCR:
                     self._engine = PaddleOCR(
                         use_angle_cls=False,
                         lang='ch',
-                        show_log=False,
-                        use_onnx=True
+                        show_log=False
                     )
                     print("✓ OCR 模型加载完成 (PaddleOCR PP-OCRv4)")
 
