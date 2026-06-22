@@ -13,7 +13,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt pyinstaller
 
-RUN FUNASR_PATH=$(python -c 'import funasr; print(funasr.__path__[0])' 2>/dev/null) && \
+RUN FUNASR_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/funasr && \
     mkdir -p /build/funasr_pkg && \
     cp -r "$FUNASR_PATH" /build/funasr_pkg/funasr && \
     pyinstaller --onefile \
