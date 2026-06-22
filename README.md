@@ -11,29 +11,47 @@
 
 ## 下载
 
-在 [Releases](../../releases) 页面下载对应平台的二进制文件：
+在 [Releases](../../releases) 页面下载：
 
-| 平台 | 文件名 |
-|------|--------|
-| Linux x86_64 | `funasr-linux-x86_64` |
-| Linux aarch64 | `funasr-linux-aarch64` |
-| Windows x86_64 | `funasr-windows-x86_64.exe` |
+| 文件 | 说明 | 大小 |
+|------|------|------|
+| `funasr-linux-x86_64` | Linux x86_64 二进制 | ~350MB |
+| `funasr-linux-aarch64` | Linux ARM64 二进制 | ~350MB |
+| `funasr-windows-x86_64.exe` | Windows x86_64 二进制 | ~350MB |
+| `models.zip` | 模型文件 | ~1.2GB |
 
 需要 glibc ≥ 2.28（CentOS 8+ / Ubuntu 20.04+ / Debian 10+）。
 
 ## 准备模型
 
-模型文件需单独下载，放到二进制同目录下的 `model/` 文件夹：
+下载 `models.zip` 并解压到二进制同目录下：
 
-```
+```bash
+# 解压模型
+unzip models.zip -d ./model/
+
+# 目录结构
 model/
-├── SenseVoiceSmall/          # 语音模型（约 900MB）
-│   ├── model.onnx
-│   └── ...
-└── paddleocr/                # OCR 模型（约 17MB）
-    ├── det/ch_PP-OCRv4_det_infer/
-    ├── rec/ch_PP-OCRv4_rec_infer/
-    └── cls/ch_ppocr_mobile_v2.0_cls_infer/
+├── model.onnx              # ASR 主模型
+├── model_quant.onnx        # ASR 量化模型
+├── tokens.json             # ASR 词表
+├── config.yaml             # ASR 配置
+├── am.mvn                  # ASR 配置
+├── chn_jpn_yue_eng_ko_spectok.bpe.model  # BPE 模型
+├── configuration.json       # ASR 配置
+└── paddleocr/             # OCR 模型
+    ├── det/                # 检测模型
+    └── rec/                # 识别模型
+```
+
+或使用环境变量指定模型路径：
+
+```bash
+# ASR 模型
+export FUNASR_MODEL_DIR=/path/to/asr/models
+
+# OCR 模型
+export FUNASR_OCR_MODEL_DIR=/path/to/ocr/models
 ```
 
 ## 使用
@@ -125,6 +143,6 @@ curl http://127.0.0.1:5001/ocr/health
 ## 注意事项
 
 - 二进制内嵌 Python 和所有依赖，目标机器不需要装任何东西
-- 模型文件约 900MB+17MB，首次使用前确保已下载
+- 模型文件约 1.2GB，需下载并解压
 - 服务启动时预加载模型，之后识别秒级返回
 - `.env` 文件由服务自动生成，供 CLI 模式使用

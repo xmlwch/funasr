@@ -73,12 +73,13 @@ jobs:
         with:
           path: dist
 
-      - name: Rename binaries
+      - name: Prepare release files
         run: |
           mkdir release
           cp dist/linux-x86_64/funasr-linux-x86_64 release/
           cp dist/linux-aarch64/funasr-linux-aarch64 release/
           cp dist/windows-x86_64/funasr.exe release/funasr-windows-x86_64.exe
+          cd model && zip -r ../release/models.zip . -x "*.DS_Store" || python -c "import shutil; shutil.make_archive('../release/models', 'zip', '.', '.')"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -91,6 +92,11 @@ jobs:
             | Linux x86_64 | `funasr-linux-x86_64` |
             | Linux aarch64 | `funasr-linux-aarch64` |
             | Windows x86_64 | `funasr-windows-x86_64.exe` |
+            | 模型文件 | `models.zip` (~1.2GB) |
 
             需要 glibc ≥ 2.28。
+
+            模型文件需解压到程序同目录或通过环境变量指定：
+            - `FUNASR_MODEL_DIR` - ASR 模型目录
+            - `FUNASR_OCR_MODEL_DIR` - OCR 模型目录
           files: release/*
