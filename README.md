@@ -11,46 +11,59 @@
 
 ## 下载
 
-在 [Releases](../../releases) 页面下载：
-
-| 文件 | 说明 | 大小 |
-|------|------|------|
-| `funasr-linux-x86_64` | Linux x86_64 二进制 | ~350MB |
-| `funasr-linux-aarch64` | Linux ARM64 二进制 | ~350MB |
-| `funasr-windows-x86_64.exe` | Windows x86_64 二进制 | ~350MB |
-| `models.zip` | 模型文件 | ~1.2GB |
+在 [Releases](../../releases) 页面下载对应平台的二进制文件。
 
 需要 glibc ≥ 2.28（CentOS 8+ / Ubuntu 20.04+ / Debian 10+）。
 
 ## 准备模型
 
-下载 `models.zip` 并解压到二进制同目录下：
+### ASR 模型（SenseVoiceSmall）
 
-```bash
-# 解压模型
-unzip models.zip -d ./model/
+从 [ModelScope](https://www.modelscope.cn/models/iic/SenseVoiceSmall) 下载，目录结构：
 
-# 目录结构
+```
 model/
-├── model.onnx              # ASR 主模型
-├── model_quant.onnx        # ASR 量化模型
-├── tokens.json             # ASR 词表
-├── config.yaml             # ASR 配置
-├── am.mvn                  # ASR 配置
-├── chn_jpn_yue_eng_ko_spectok.bpe.model  # BPE 模型
-├── configuration.json       # ASR 配置
-└── paddleocr/             # OCR 模型
-    ├── det/                # 检测模型
-    └── rec/                # 识别模型
+├── model.onnx
+├── model_quant.onnx
+├── tokens.json
+├── config.yaml
+├── am.mvn
+├── chn_jpn_yue_eng_ko_spectok.bpe.model
+└── configuration.json
+```
+
+### OCR 模型（PaddleOCR PP-OCRv4）
+
+下载并解压：
+```bash
+# 检测模型
+curl -L -o det.tar https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_det_infer.tar
+tar -xf det.tar && mv ch_PP-OCRv4_det_infer det/
+
+# 识别模型
+curl -L -o rec.tar https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_infer.tar
+tar -xf rec.tar && mv ch_PP-OCRv4_rec_infer rec/
+```
+
+最终目录结构：
+```
+model/
+├── model.onnx
+├── model_quant.onnx
+├── tokens.json
+├── config.yaml
+├── am.mvn
+├── chn_jpn_yue_eng_ko_spectok.bpe.model
+├── configuration.json
+└── paddleocr/
+    ├── det/
+    └── rec/
 ```
 
 或使用环境变量指定模型路径：
 
 ```bash
-# ASR 模型
 export FUNASR_MODEL_DIR=/path/to/asr/models
-
-# OCR 模型
 export FUNASR_OCR_MODEL_DIR=/path/to/ocr/models
 ```
 
