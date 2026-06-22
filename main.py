@@ -140,10 +140,11 @@ class PPOCR:
                     det_dir = os.path.join(ocr_model_dir, 'det', 'ch_PP-OCRv4_det_infer')
                     rec_dir = os.path.join(ocr_model_dir, 'rec', 'ch_PP-OCRv4_rec_infer')
                     self._engine = PaddleOCR(
-                        use_doc_orientation_classify=False,
+                        use_angle_cls=False,
                         lang='ch',
-                        text_detection_model_dir=det_dir,
-                        text_recognition_model_dir=rec_dir
+                        det_model_dir=det_dir,
+                        rec_model_dir=rec_dir,
+                        show_log=False
                     )
                     print("✓ OCR 模型加载完成 (PaddleOCR PP-OCRv4)")
 
