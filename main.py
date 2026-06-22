@@ -20,7 +20,7 @@ if sys.platform == 'win32':
     possible_paths = [
         os.path.join(base_dir, 'torch', 'lib'),
         'D:\\anaconda3\\envs\\funAsr\\lib\\site-packages\\torch\\lib',
-        'C:\\Users\\Administrator\\.paddlex\\official_models',  # 清理缓存目录
+        'C:\\Users\\Administrator\\.paddlex\\official_models',
     ]
     for path in possible_paths:
         if os.path.exists(path):
@@ -28,6 +28,10 @@ if sys.platform == 'win32':
                 os.add_dll_directory(path)
             except Exception:
                 pass
+
+# 禁用 oneDNN 避免兼容性问题
+os.environ['FLAGS_floating_ops_validation'] = 'false'
+os.environ['MKLDNN_ENABLED'] = '0'
 
 # 生产环境保护配置
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 最大请求体 100MB
@@ -140,7 +144,9 @@ class PPOCR:
                     self._engine = PaddleOCR(
                         use_angle_cls=False,
                         lang='ch',
-                        show_log=False
+                        show_log=False,
+                        use_mkldnn=False,
+                        cpu_threads=1
                     )
                     print("✓ OCR 模型加载完成 (PaddleOCR PP-OCRv4)")
 
