@@ -135,7 +135,7 @@ class PPOCR:
                         base_dir = os.path.dirname(os.path.abspath(sys.executable))
                     else:
                         base_dir = os.path.dirname(os.path.abspath(__file__))
-                    ocr_model_dir = os.path.join(base_dir, "model", "paddleocr")
+                    ocr_model_dir = os.environ.get("FUNASR_OCR_MODEL_DIR", os.path.join(base_dir, "model", "paddleocr"))
                     det_dir = os.path.join(ocr_model_dir, "det")
                     rec_dir = os.path.join(ocr_model_dir, "rec")
                     self._engine = PaddleOCR(
