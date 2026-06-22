@@ -1,3 +1,4 @@
 funasr-onnx
 funasr
 onnxruntime
+rapidocr_onnxruntime
