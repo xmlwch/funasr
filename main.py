@@ -9,6 +9,11 @@ import argparse
 import tempfile
 import threading
 import urllib.request
+# 生产环境保护配置
+MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 最大请求体 100MB
+INFERENCE_TIMEOUT = 300  # 推理超时 300 秒
+DOWNLOAD_TIMEOUT = 60   # 下载超时 60 秒
+
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 from funasr.utils.postprocess_utils import rich_transcription_postprocess
@@ -58,8 +63,14 @@ class FunASR:
         fd, tmp_path = tempfile.mkstemp(suffix="_audio")
         os.close(fd)
         try:
-            with urllib.request.urlopen(url, timeout=30) as resp, open(tmp_path, "wb") as f:
-                shutil.copyfileobj(resp, f)
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as resp:
+                # 检查文件大小
+                content_length = resp.headers.get('Content-Length')
+                if content_length and int(content_length) > MAX_CONTENT_LENGTH:
+                    os.unlink(tmp_path)
+                    raise ValueError("文件大小超过限制: %dMB" % (MAX_CONTENT_LENGTH // 1024 // 1024))
+                with open(tmp_path, "wb") as f:
+                    shutil.copyfileobj(resp, f)
         except Exception:
             os.unlink(tmp_path)
             raise
@@ -70,12 +81,23 @@ class FunASR:
         try:
             loop = asyncio.get_running_loop()
             if audio_path.startswith(("http://", "https://")):
-                real_path = await loop.run_in_executor(None, self._download_http, audio_path)
+                real_path = await asyncio.wait_for(
+                    loop.run_in_executor(None, self._download_http, audio_path),
+                    timeout=DOWNLOAD_TIMEOUT
+                )
                 tmp_path = real_path
             else:
                 real_path = audio_path
-            text = await loop.run_in_executor(None, self._generate_audio, real_path)
+            # 检查本地文件大小
+            if os.path.getsize(real_path) > MAX_CONTENT_LENGTH:
+                raise ValueError("文件大小超过限制: %dMB" % (MAX_CONTENT_LENGTH // 1024 // 1024))
+            text = await asyncio.wait_for(
+                loop.run_in_executor(None, self._generate_audio, real_path),
+                timeout=INFERENCE_TIMEOUT
+            )
             return text
+        except asyncio.TimeoutError:
+            raise TimeoutError("推理超时，请检查文件或降低并发")
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -120,8 +142,14 @@ class PPOCR:
         fd, tmp_path = tempfile.mkstemp(suffix="_image")
         os.close(fd)
         try:
-            with urllib.request.urlopen(url, timeout=30) as resp, open(tmp_path, "wb") as f:
-                shutil.copyfileobj(resp, f)
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as resp:
+                # 检查文件大小
+                content_length = resp.headers.get('Content-Length')
+                if content_length and int(content_length) > MAX_CONTENT_LENGTH:
+                    os.unlink(tmp_path)
+                    raise ValueError("文件大小超过限制: %dMB" % (MAX_CONTENT_LENGTH // 1024 // 1024))
+                with open(tmp_path, "wb") as f:
+                    shutil.copyfileobj(resp, f)
         except Exception:
             os.unlink(tmp_path)
             raise
@@ -150,12 +178,23 @@ class PPOCR:
         try:
             loop = asyncio.get_running_loop()
             if image_path.startswith(("http://", "https://")):
-                real_path = await loop.run_in_executor(None, self._download_http, image_path)
+                real_path = await asyncio.wait_for(
+                    loop.run_in_executor(None, self._download_http, image_path),
+                    timeout=DOWNLOAD_TIMEOUT
+                )
                 tmp_path = real_path
             else:
                 real_path = image_path
-            text = await loop.run_in_executor(None, self._generate_text, real_path)
+            # 检查本地文件大小
+            if os.path.getsize(real_path) > MAX_CONTENT_LENGTH:
+                raise ValueError("文件大小超过限制: %dMB" % (MAX_CONTENT_LENGTH // 1024 // 1024))
+            text = await asyncio.wait_for(
+                loop.run_in_executor(None, self._generate_text, real_path),
+                timeout=INFERENCE_TIMEOUT
+            )
             return text
+        except asyncio.TimeoutError:
+            raise TimeoutError("推理超时，请检查文件或降低并发")
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -168,6 +207,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 start_time = time.time()
                 length = int(self.headers.get('Content-Length', 0))
+                # 检查请求体大小
+                if length > MAX_CONTENT_LENGTH:
+                    self._json(413, {'code': 413, 'message': '请求体过大，最大 %dMB' % (MAX_CONTENT_LENGTH // 1024 // 1024), 'data': None})
+                    return
                 body = json.loads(self.rfile.read(length).decode('utf-8'))
                 filepath = body.get('filepath')
                 if not filepath:
@@ -176,6 +219,10 @@ class Handler(BaseHTTPRequestHandler):
                 text = asyncio.run(FunASR().get_audio_content(filepath))
                 duration = time.time() - start_time
                 self._json(200, {'code': 200, 'message': '识别成功', 'data': text, 'duration': duration})
+            except TimeoutError as e:
+                self._json(408, {'code': 408, 'message': str(e), 'data': None})
+            except ValueError as e:
+                self._json(400, {'code': 400, 'message': str(e), 'data': None})
             except FileNotFoundError as e:
                 self._json(400, {'code': 400, 'message': str(e), 'data': None})
             except Exception as e:
@@ -185,6 +232,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 start_time = time.time()
                 length = int(self.headers.get('Content-Length', 0))
+                # 检查请求体大小
+                if length > MAX_CONTENT_LENGTH:
+                    self._json(413, {'code': 413, 'message': '请求体过大，最大 %dMB' % (MAX_CONTENT_LENGTH // 1024 // 1024), 'data': None})
+                    return
                 body = json.loads(self.rfile.read(length).decode('utf-8'))
                 filepath = body.get('filepath')
                 if not filepath:
@@ -193,6 +244,10 @@ class Handler(BaseHTTPRequestHandler):
                 text = asyncio.run(PPOCR().get_text_content(filepath))
                 duration = time.time() - start_time
                 self._json(200, {'code': 200, 'message': '识别成功', 'data': text, 'duration': duration})
+            except TimeoutError as e:
+                self._json(408, {'code': 408, 'message': str(e), 'data': None})
+            except ValueError as e:
+                self._json(400, {'code': 400, 'message': str(e), 'data': None})
             except FileNotFoundError as e:
                 self._json(400, {'code': 400, 'message': str(e), 'data': None})
             except Exception as e:
