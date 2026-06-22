@@ -10,17 +10,16 @@ import tempfile
 import threading
 import urllib.request
 
-# Windows 环境下添加 torch DLL 搜索路径
+# Windows 环境下添加 torch DLL 搜索路径（兼容打包后的环境）
 if sys.platform == 'win32':
     if getattr(sys, 'frozen', False):
         base_dir = os.path.dirname(os.path.abspath(sys.executable))
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-    # 尝试多个可能的 torch lib 路径
+    # 查找 torch lib 目录
     possible_paths = [
         os.path.join(base_dir, 'torch', 'lib'),
-        'D:\\anaconda3\\envs\\funAsr\\lib\\site-packages\\torch\\lib',
-        'C:\\Users\\Administrator\\.paddlex\\official_models',
+        os.path.join(base_dir, 'Library', 'bin'),
     ]
     for path in possible_paths:
         if os.path.exists(path):
@@ -28,12 +27,6 @@ if sys.platform == 'win32':
                 os.add_dll_directory(path)
             except Exception:
                 pass
-
-# 禁用 oneDNN 避免兼容性问题
-os.environ['FLAGS_floating_ops_validation'] = 'false'
-os.environ['MKLDNN_ENABLED'] = '0'
-os.environ['FLAGS_enable_fast_matmul'] = 'false'
-os.environ['FLAGS_fused_ops_cache_max_size'] = '0'
 
 # 生产环境保护配置
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 最大请求体 100MB
