@@ -124,8 +124,7 @@ class PPOCR:
                         lang='ch',
                         det_model_dir=os.path.join(ocr_model_dir, 'det', 'ch_PP-OCRv4_det_infer'),
                         rec_model_dir=os.path.join(ocr_model_dir, 'rec', 'ch_PP-OCRv4_rec_infer'),
-                        cls_model_dir=os.path.join(ocr_model_dir, 'cls', 'ch_ppocr_mobile_v2.0_cls_infer'),
-                        show_log=False
+                        cls_model_dir=os.path.join(ocr_model_dir, 'cls', 'ch_ppocr_mobile_v2.0_cls_infer')
                     )
                     print("✓ OCR 模型加载完成 (PaddleOCR PP-OCRv4)")
 
