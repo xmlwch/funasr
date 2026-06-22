@@ -91,8 +91,21 @@ class PPOCR:
             with self.__class__._lock:
                 if not self.__class__._initialized:
                     self.__class__._initialized = True
-                    from rapidocr_onnxruntime import RapidOCR
-                    self.ocr = RapidOCR()
+                    from paddleocr import PaddleOCR
+                    if getattr(sys, 'frozen', False):
+                        base_dir = os.path.dirname(os.path.abspath(sys.executable))
+                    else:
+                        base_dir = os.path.dirname(os.path.abspath(__file__))
+                    ocr_model_dir = os.path.join(base_dir, "model", "paddleocr")
+                    self.ocr = PaddleOCR(
+                        use_angle_cls=True,
+                        lang='ch',
+                        use_pdserving=False,
+                        det_model_dir=os.path.join(ocr_model_dir, 'det'),
+                        rec_model_dir=os.path.join(ocr_model_dir, 'rec'),
+                        cls_model_dir=os.path.join(ocr_model_dir, 'cls'),
+                        show_log=False
+                    )
                     print("OCR 模型初始化成功")
 
     def __new__(cls, *args, **kwargs):
@@ -117,11 +130,19 @@ class PPOCR:
     def _generate_text(self, image_path):
         if not os.path.exists(image_path):
             raise FileNotFoundError("文件不存在: %s" % image_path)
-        result, elapse = self.ocr(image_path)
-        if result is None:
+        result = self.ocr.ocr(image_path)
+        if result is None or len(result) == 0:
             return ""
-        # 合并所有识别结果，用换行分隔
-        texts = [item[1] for item in result]
+        texts = []
+        for line in result:
+            if line:
+                for item in line:
+                    if isinstance(item, list) and len(item) == 2:
+                        text = item[1]
+                        if isinstance(text, tuple):
+                            texts.append(text[0])
+                        else:
+                            texts.append(text)
         return "\n".join(texts)
 
     async def get_text_content(self, image_path):
