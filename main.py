@@ -9,6 +9,26 @@ import argparse
 import tempfile
 import threading
 import urllib.request
+
+# Windows 环境下添加 torch DLL 搜索路径
+if sys.platform == 'win32':
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    # 尝试多个可能的 torch lib 路径
+    possible_paths = [
+        os.path.join(base_dir, 'torch', 'lib'),
+        'D:\\anaconda3\\envs\\funAsr\\lib\\site-packages\\torch\\lib',
+        'C:\\Users\\Administrator\\.paddlex\\official_models',  # 清理缓存目录
+    ]
+    for path in possible_paths:
+        if os.path.exists(path):
+            try:
+                os.add_dll_directory(path)
+            except Exception:
+                pass
+
 # 生产环境保护配置
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 最大请求体 100MB
 INFERENCE_TIMEOUT = 300  # 推理超时 300 秒
