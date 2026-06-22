@@ -160,11 +160,30 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(e)
                 self._json(400, {'code': 400, 'message': '当前系统繁忙，请稍后重试', 'data': None})
+        elif self.path == '/ocr/identify':
+            try:
+                start_time = time.time()
+                length = int(self.headers.get('Content-Length', 0))
+                body = json.loads(self.rfile.read(length).decode('utf-8'))
+                filepath = body.get('filepath')
+                if not filepath:
+                    self._json(400, {'code': 400, 'message': '缺少 filepath 参数', 'data': None})
+                    return
+                text = asyncio.run(PPOCR().get_text_content(filepath))
+                duration = time.time() - start_time
+                self._json(200, {'code': 200, 'message': '识别成功', 'data': text, 'duration': duration})
+            except FileNotFoundError as e:
+                self._json(400, {'code': 400, 'message': str(e), 'data': None})
+            except Exception as e:
+                print(e)
+                self._json(400, {'code': 400, 'message': '当前系统繁忙，请稍后重试', 'data': None})
         else:
             self._json(404, {'code': 404, 'message': '未找到路由', 'data': None})
 
     def do_GET(self):
         if self.path == '/funasr/health':
+            self._json(200, {'code': 200, 'status': 'ok'})
+        elif self.path == '/ocr/health':
             self._json(200, {'code': 200, 'status': 'ok'})
         else:
             self._json(405, {'code': 405, 'message': '仅支持 POST', 'data': None})
