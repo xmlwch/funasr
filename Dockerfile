@@ -11,24 +11,25 @@ COPY main.py .
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir -r requirements.txt pyinstaller && \
-    RUN FUNASR_PATH=$(python -c 'import funasr; print(funasr.__path__[0])') && \
-        FUNASR_DATA="$FUNASR_PATH/version.txt" && \
-        pyinstaller --onefile \
-          --add-binary "$(python -c 'import onnxruntime; print(onnxruntime.__path__[0])')/capi/*.so*:onnxruntime/capi" \
-          --add-data "$FUNASR_DATA:funasr" \
-          --collect-submodules torch \
-          --hidden-import=torch \
-          --hidden-import=torchaudio \
-          --hidden-import=funasr_onnx \
-          --hidden-import=funasr \
-          --hidden-import=librosa \
-          --hidden-import=soundfile \
-          --hidden-import=paddle \
-          --hidden-import=paddle.fluid \
-          --hidden-import=paddleocr \
-          --collect-all paddle \
-          --collect-all paddleocr \
-          --collect-all funasr \
-          --name funasr \
-          main.py
+    pip install --no-cache-dir -r requirements.txt pyinstaller
+
+RUN FUNASR_PATH=$(python -c 'import funasr; print(funasr.__path__[0])') && \
+    FUNASR_DATA="$FUNASR_PATH/version.txt" && \
+    pyinstaller --onefile \
+      --add-binary "$(python -c 'import onnxruntime; print(onnxruntime.__path__[0])')/capi/*.so*:onnxruntime/capi" \
+      --add-data "$FUNASR_DATA:funasr" \
+      --collect-submodules torch \
+      --hidden-import=torch \
+      --hidden-import=torchaudio \
+      --hidden-import=funasr_onnx \
+      --hidden-import=funasr \
+      --hidden-import=librosa \
+      --hidden-import=soundfile \
+      --hidden-import=paddle \
+      --hidden-import=paddle.fluid \
+      --hidden-import=paddleocr \
+      --collect-all paddle \
+      --collect-all paddleocr \
+      --collect-all funasr \
+      --name funasr \
+      main.py
