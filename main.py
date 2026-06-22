@@ -32,7 +32,7 @@ class FunASR:
                     model_dir = os.environ.get("FUNASR_MODEL_DIR", os.path.join(base_dir, "model"))
                     self.model = SenseVoiceSmall(model_dir, batch_size=1, quantize=True, intra_op_num_threads=4)
                     # self.model = SenseVoiceSmall(model_dir, batch_size=10, quantize=True, intra_op_num_threads=64)
-                    print("语音模型初始化成功")
+                    print("✓ 语音模型加载完成 (SenseVoiceSmall)")
 
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
@@ -106,7 +106,7 @@ class PPOCR:
                         cls_model_dir=os.path.join(ocr_model_dir, 'cls', 'ch_ppocr_mobile_v2.0_cls_infer'),
                         show_log=False
                     )
-                    print("OCR 模型初始化成功")
+                    print("✓ OCR 模型加载完成 (PaddleOCR PP-OCRv4)")
 
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
@@ -278,18 +278,30 @@ if __name__ == '__main__':
             print('错误: %s' % result['message'], file=sys.stderr)
             sys.exit(1)
     else:
+        print('=' * 50)
+        print('FunASR 语音识别服务')
+        print('  - 语音识别: SenseVoiceSmall')
+        print('  - 文字识别: PaddleOCR PP-OCRv4')
+        print('=' * 50)
         print('正在加载语音模型...')
         FunASR()
+        print('')
         env_host = '127.0.0.1' if args.host == '0.0.0.0' else args.host
         with open(env_file, 'w') as f:
             f.write('FUNASR_HOST=%s\n' % env_host)
             f.write('FUNASR_PORT=%d\n' % args.port)
         server = ThreadingHTTPServer((args.host, args.port), Handler)
-        print('FunASR 服务已启动: http://%s:%d' % (args.host, args.port))
+        print('服务已启动: http://%s:%d' % (args.host, args.port))
+        print('  POST /funasr/identify  - 语音识别')
+        print('  POST /ocr/identify     - 文字识别')
+        print('  GET  /funasr/health   - ASR 健康检查')
+        print('  GET  /ocr/health      - OCR 健康检查')
+        print('')
+        print('按 Ctrl+C 停止服务')
         try:
             server.serve_forever()
         except KeyboardInterrupt:
-            print('\n服务已停止')
+            print('\n正在停止服务...')
             server.shutdown()
         finally:
             if os.path.exists(env_file):
