@@ -47,15 +47,9 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          $FUNASR_PATH = python -c "import site; Write-Output (site.getsitepackages()[0] + '\funasr')"
+          $FUNASR_PATH = python -c "import site; print(site.getsitepackages()[0] + '\funasr')"
           $FUNASR_DATA = "$FUNASR_PATH\version.txt"
-          pyinstaller --onefile --name funasr `
-            --add-data "$FUNASR_DATA:funasr" `
-            --paths "$FUNASR_PATH" `
-            --collect-all torch --collect-all torchaudio --collect-all paddle --collect-all paddleocr --collect-all funasr `
-            --hidden-import=funasr_onnx --hidden-import=funasr --hidden-import=librosa --hidden-import=soundfile `
-            --hidden-import=paddle --hidden-import=paddle.fluid --hidden-import=paddleocr `
-            main.py
+          pyinstaller --onefile --name funasr --add-data "$FUNASR_DATA;funasr" --paths "$FUNASR_PATH" --collect-all torch --collect-all torchaudio --collect-all paddle --collect-all paddleocr --collect-all funasr --hidden-import=funasr_onnx --hidden-import=funasr --hidden-import=librosa --hidden-import=soundfile --hidden-import=paddle --hidden-import=paddle.fluid --hidden-import=paddleocr main.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
