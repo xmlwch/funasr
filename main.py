@@ -248,14 +248,29 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.f:
+        # 根据文件扩展名自动识别类型
+        AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma'}
+        IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp'}
+
+        ext = os.path.splitext(args.f)[1].lower()
+        if ext in AUDIO_EXTS:
+            service = 'funasr'
+        elif ext in IMAGE_EXTS:
+            service = 'ocr'
+        else:
+            print('错误: 不支持的文件类型: %s' % ext, file=sys.stderr)
+            print('支持的音频格式: %s' % ', '.join(AUDIO_EXTS), file=sys.stderr)
+            print('支持的图片格式: %s' % ', '.join(IMAGE_EXTS), file=sys.stderr)
+            sys.exit(1)
+
         base = 'http://%s:%d' % (args.host, args.port)
         try:
-            urllib.request.urlopen(base + '/funasr/health', timeout=3)
+            urllib.request.urlopen(base + '/' + service + '/health', timeout=3)
         except Exception:
             print('错误: 服务未启动，请先执行 funasr -host %s -port %d' % (args.host, args.port), file=sys.stderr)
             sys.exit(1)
         req = json.dumps({'filepath': args.f}).encode('utf-8')
-        resp = urllib.request.urlopen(base + '/funasr/identify', data=req, timeout=300)
+        resp = urllib.request.urlopen(base + '/' + service + '/identify', data=req, timeout=300)
         result = json.loads(resp.read().decode('utf-8'))
         if result['code'] == 200:
             print(result['data'])
