@@ -335,6 +335,8 @@ if __name__ == '__main__':
         print('=' * 50)
         print('正在加载语音模型...')
         FunASR()
+        print('正在加载 OCR 模型...')
+        PPOCR()
         print('')
         env_host = '127.0.0.1' if args.host == '0.0.0.0' else args.host
         with open(env_file, 'w') as f:
