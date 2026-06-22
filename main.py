@@ -145,8 +145,7 @@ class PPOCR:
                         use_angle_cls=False,
                         lang='ch',
                         show_log=False,
-                        use_mkldnn=False,
-                        cpu_threads=1
+                        use_onnx=True
                     )
                     print("✓ OCR 模型加载完成 (PaddleOCR PP-OCRv4)")
 
