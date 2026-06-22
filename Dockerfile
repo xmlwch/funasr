@@ -22,6 +22,9 @@ RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pyt
       --hidden-import=librosa \
       --hidden-import=soundfile \
       --hidden-import=paddle \
+      --hidden-import=paddle.fluid \
       --hidden-import=paddleocr \
+      --collect-all paddle \
+      --collect-all paddleocr \
       --name funasr \
       main.py
