@@ -3,3 +3,4 @@ funasr
 onnxruntime
 paddleocr==2.9.1
 paddlepaddle==2.6.2
+more_itertools
