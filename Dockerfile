@@ -13,14 +13,24 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt pyinstaller
 
-RUN FUNASR_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/funasr && \
+# Get site-packages path dynamically
+RUN FUNASR_SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])") && \
+    FUNASR_PATH=$FUNASR_SITE_PACKAGES/funasr && \
     mkdir -p /build/funasr_pkg && \
-    cp -r "$FUNASR_PATH" /build/funasr_pkg/funasr && \
+    cp -r $FUNASR_PATH /build/funasr_pkg/ && \
+    cp -r $FUNASR_SITE_PACKAGES/funasr_onnx /build/funasr_pkg/ && \
+    cp -r $FUNASR_SITE_PACKAGES/Cython /build/funasr_pkg/ && \
     pyinstaller --onefile \
-      --add-data /build/funasr_pkg/funasr/version.txt:funasr \
-      --collect-submodules torch \
-      --hidden-import=torch \
-      --hidden-import=torchaudio \
+      --add-data /build/funasr_pkg/funasr:funasr \
+      --add-data /build/funasr_pkg/funasr_onnx:funasr_onnx \
+      --add-data /build/funasr_pkg/Cython:Cython \
+      --collect-all torch \
+      --collect-all torchaudio \
+      --collect-all paddle \
+      --collect-all paddleocr \
+      --collect-all funasr \
+      --collect-all imageio \
+      --collect-all imgaug \
       --hidden-import=funasr_onnx \
       --hidden-import=funasr \
       --hidden-import=librosa \
@@ -28,8 +38,16 @@ RUN FUNASR_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/fun
       --hidden-import=paddle \
       --hidden-import=paddle.fluid \
       --hidden-import=paddleocr \
-      --collect-all paddle \
-      --collect-all paddleocr \
-      --collect-all funasr \
+      --hidden-import=onnxruntime \
+      --hidden-import=numpy \
+      --hidden-import=cv2 \
+      --hidden-import=Cython \
+      --hidden-import=Cython.Compiler \
+      --hidden-import=Cython.Runtime \
+      --exclude-module=torch.tests \
+      --exclude-module=torch.testing \
+      --exclude-module=torch.utils.tensorboard \
+      --exclude-module=paddle.tests \
+      --exclude-module=paddleOCR.tests \
       --name funasr \
       main.py
