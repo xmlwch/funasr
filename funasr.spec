@@ -17,9 +17,7 @@ datas = [
     (os.path.join(SITE_PACKAGES, 'funasr_onnx').replace('\\', '/'), 'funasr_onnx'),
     (os.path.join(SITE_PACKAGES, 'Cython').replace('\\', '/'), 'Cython'),
 ]
-binaries = [
-    (os.path.join(SITE_PACKAGES, 'paddle', 'libs', '*.dll').replace('\\', '/'), 'paddle/libs'),
-]
+binaries = []
 hiddenimports = [
     'funasr_onnx',
     'funasr',
