@@ -1,6 +1,10 @@
 import os
 import re
 import sys
+sys.__stdout__.write(f"[DEBUG] main.py starting, sys.platform={sys.platform}, frozen={getattr(sys,'frozen',False)}\n")
+sys.__stdout__.flush()
+
+
 import json
 import time
 import asyncio
