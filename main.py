@@ -28,6 +28,23 @@ if sys.platform == 'win32':
             except Exception:
                 pass
 
+# Linux 环境下修复 site 模块（PyInstaller 打包后 site.getsitepackages 和 USER_SITE 可能失效）
+if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
+    import site as _site
+    import pathlib as _pathlib
+    _base = _pathlib.Path(sys._MEIPASS)
+    for _sp in [_base / f'lib/python{x}.{y}/site-packages' for x in range(8,14) for y in range(0,14)] + \
+               [_base / f'python{x}.{y}/lib/site-packages' for x in range(8,14) for y in range(0,14)]:
+        if _sp.exists():
+            _site.getsitepackages = lambda p=_sp: [str(p)]
+            _site.USER_SITE = str(_sp)
+            # 设置 LD_LIBRARY_PATH
+            for _sub in ['paddle/libs', 'paddle/base']:
+                _pp = _sp / _sub
+                if _pp.exists():
+                    os.environ['LD_LIBRARY_PATH'] = f'{_pp}:{os.environ.get("LD_LIBRARY_PATH","")}'
+            break
+
 # 生产环境保护配置
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 最大请求体 100MB
 INFERENCE_TIMEOUT = 300  # 推理超时 300 秒
