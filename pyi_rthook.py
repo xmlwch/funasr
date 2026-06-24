@@ -40,11 +40,15 @@ if getattr(sys, 'frozen', False):
             if lib_dir not in sys.path:
                 sys.path.insert(0, lib_dir)
 
-            # Set LD_LIBRARY_PATH for paddle libs
-            paddle_libs = pathlib.Path(bundled_sp) / 'paddle' / 'libs'
-            if paddle_libs.exists():
+            # Set LD_LIBRARY_PATH for paddle libs (both libs/ and base/ for libpaddle.so)
+            ld_paths = []
+            for subdir in ['paddle/libs', 'paddle/base']:
+                p = pathlib.Path(bundled_sp) / subdir
+                if p.exists():
+                    ld_paths.append(str(p))
+            if ld_paths:
                 ld_path = os.environ.get('LD_LIBRARY_PATH', '')
-                os.environ['LD_LIBRARY_PATH'] = f'{paddle_libs}:{ld_path}'
+                os.environ['LD_LIBRARY_PATH'] = ':'.join(ld_paths) + f':{ld_path}'
 
     elif sys.platform == 'win32':
         for path in [base_dir / 'torch' / 'lib', base_dir / 'paddle' / 'libs']:
