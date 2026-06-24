@@ -1,17 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+import site
+
+# 获取 site-packages 路径（运行时动态获取）
+SITE_PACKAGES = site.getsitepackages()[0].replace('\\', '/')
 
 # funasr 包路径
-funasr_path = 'D:/anaconda3/envs/funAsr/lib/site-packages/funasr'
+funasr_path = SITE_PACKAGES + '/funasr'
 
 datas = [
     (funasr_path, 'funasr'),
-    ('D:/anaconda3/envs/funAsr/lib/site-packages/funasr_onnx', 'funasr_onnx'),
-    ('D:/anaconda3/envs/funAsr/lib/site-packages/Cython', 'Cython'),
+    (SITE_PACKAGES + '/funasr_onnx', 'funasr_onnx'),
+    (SITE_PACKAGES + '/Cython', 'Cython'),
 ]
 binaries = [
-    ('D:/anaconda3/envs/funAsr/lib/site-packages/torch/lib/*.dll', 'torch/lib'),
-    ('D:/anaconda3/envs/funAsr/lib/site-packages/paddle/libs/*.dll', 'paddle/libs'),
+    (SITE_PACKAGES + '/torch/lib/*.dll', 'torch/lib'),
+    (SITE_PACKAGES + '/paddle/libs/*.dll', 'paddle/libs'),
 ]
 hiddenimports = [
     'funasr_onnx',
@@ -68,15 +72,13 @@ hiddenimports += tmp_ret[2]
 
 a = Analysis(
     ['main.py'],
-    pathex=[
-        'D:/anaconda3/envs/funAsr/lib/site-packages',
-    ],
+    pathex=[SITE_PACKAGES],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['D:/code/PythonCode/funASR/pyi_rthook.py'],
+    runtime_hooks=['pyi_rthook.py'],
     excludes=[
         'torch.tests',
         'torch.testing',
@@ -105,7 +107,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,  # 禁用 UPX，加快构建速度
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
