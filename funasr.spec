@@ -68,11 +68,14 @@ datas = [
     (CYTHON_PATH, 'Cython'),
 ]
 
-# paddle libs DLL - 使用 glob 模式
+# paddle libs - 根据平台选择文件类型
 binaries = []
 if PADDLE_LIBS_PATH:
-    # 使用模式匹配，格式: 'source_pattern:dest_dir'
-    binaries.append((os.path.join(PADDLE_LIBS_PATH, '*.dll').replace('\\', '/'), 'paddle/libs'))
+    import sys
+    if sys.platform == 'win32':
+        binaries.append((os.path.join(PADDLE_LIBS_PATH, '*.dll').replace('\\', '/'), 'paddle/libs'))
+    else:
+        binaries.append((os.path.join(PADDLE_LIBS_PATH, '*.so').replace('\\', '/'), 'paddle/libs'))
 
 hiddenimports = [
     'funasr_onnx',
@@ -104,7 +107,7 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[SPEC_DIR],  # 添加 hooks 目录
+    hookspath=[],
     hooksconfig={},
     runtime_hooks=[os.path.join(SPEC_DIR, 'pyi_rthook.py')],
     excludes=[
