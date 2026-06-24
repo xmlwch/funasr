@@ -6,11 +6,9 @@ import pathlib
 
 if getattr(sys, 'frozen', False):
     base_dir = pathlib.Path(sys._MEIPASS)
-    print(f"[hook] base_dir={base_dir}", flush=True)
-    print(f"[hook] original getsitepackages={site.getsitepackages()}", flush=True)
 
     if sys.platform.startswith('linux'):
-        # Find site-packages in bundle (PyInstaller onefile uses pythonX.Y/lib path structure)
+        # PyInstaller onefile on Linux uses: $MEIPASS/lib/pythonX.Y/site-packages
         candidates = [
             base_dir / 'lib' / 'python3.9' / 'site-packages',
             base_dir / 'lib' / 'python3.10' / 'site-packages',
@@ -21,30 +19,32 @@ if getattr(sys, 'frozen', False):
         for sp in candidates:
             if sp.exists():
                 bundled_sp = str(sp)
-                print(f"[hook] found bundled_sp={bundled_sp}", flush=True)
                 break
 
         if bundled_sp:
+            # Fix site.getsitepackages - original may return wrong path in PyInstaller env
             _original_getsitepackages = site.getsitepackages
             def _fixed_getsitepackages():
-                print(f"[hook] getsitepackages called, returning bundled_sp={bundled_sp}", flush=True)
                 return [bundled_sp]
             site.getsitepackages = _fixed_getsitepackages
 
+            # Fix site.USER_SITE - must not be None
+            if site.USER_SITE is None:
+                site.USER_SITE = bundled_sp
+
+            # Add to sys.path
             if bundled_sp not in sys.path:
                 sys.path.insert(0, bundled_sp)
 
-            lib_dir = os.path.dirname(bundled_sp)
+            lib_dir = os.path.dirname(bundled_sp)  # .../lib
             if lib_dir not in sys.path:
                 sys.path.insert(0, lib_dir)
-            print(f"[hook] added lib_dir={lib_dir} to sys.path", flush=True)
 
-        if bundled_sp:
+            # Set LD_LIBRARY_PATH for paddle libs
             paddle_libs = pathlib.Path(bundled_sp) / 'paddle' / 'libs'
             if paddle_libs.exists():
                 ld_path = os.environ.get('LD_LIBRARY_PATH', '')
                 os.environ['LD_LIBRARY_PATH'] = f'{paddle_libs}:{ld_path}'
-                print(f"[hook] set LD_LIBRARY_PATH={os.environ['LD_LIBRARY_PATH']}", flush=True)
 
     elif sys.platform == 'win32':
         for path in [base_dir / 'torch' / 'lib', base_dir / 'paddle' / 'libs']:
