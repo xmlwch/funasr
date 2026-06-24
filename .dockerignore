@@ -1,7 +1,6 @@
 *.md
 *.bat
 *.sh
-*.spec
 .vscode
 .git
 .gitignore
