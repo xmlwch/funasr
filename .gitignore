@@ -1,7 +1,6 @@
 model/
 dist/
 build/
-*.spec
 .env
 funasr-*
 .claude/
