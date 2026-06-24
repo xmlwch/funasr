@@ -33,8 +33,8 @@ if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
     import site as _site
     import pathlib as _pathlib
     _base = _pathlib.Path(sys._MEIPASS)
-    for _sp in [_base / f'lib/python{x}.{y}/site-packages' for x in range(8,14) for y in range(0,14)] + \
-               [_base / f'python{x}.{y}/lib/site-packages' for x in range(8,14) for y in range(0,14)]:
+    for _sp in [_base / f'lib/python{x}.{y}/site-packages' for x in [3] for y in range(8,14)] + \
+               [_base / f'python{x}.{y}/lib/site-packages' for x in [3] for y in range(8,14)]:
         if _sp.exists():
             _site.getsitepackages = lambda p=_sp: [str(p)]
             _site.USER_SITE = str(_sp)
