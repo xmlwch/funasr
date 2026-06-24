@@ -40,17 +40,69 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Get funasr path
+        run: |
+          python -c "import funasr; import os; print(os.path.dirname(funasr.__file__))" > funasr_path.txt
+          python -c "import Cython; print(os.path.dirname(Cython.__file__))" > cython_path.txt
+
       - name: Install dependencies
         run: |
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt pyinstaller
 
       - name: Build with PyInstaller
+        env:
+          FUNASR_PATH: ${{ github.workspace }}
         run: |
-          python -c "import funasr; import os; print(os.path.dirname(funasr.__file__))" > funasr_path.txt
-          $FUNASR_PATH = Get-Content funasr_path.txt
-          $FUNASR_DATA = $FUNASR_PATH + "\version.txt"
-          pyinstaller --onefile --name funasr --add-data="$FUNASR_DATA;funasr" --paths="$FUNASR_PATH" --collect-all torch --collect-all torchaudio --collect-all paddle --collect-all paddleocr --collect-all funasr --hidden-import=funasr_onnx --hidden-import=funasr --hidden-import=librosa --hidden-import=soundfile --hidden-import=paddle --hidden-import=paddle.fluid --hidden-import=paddleocr main.py
+          $content = Get-Content funasr_path.txt -Raw
+          $cythonPath = Get-Content cython_path.txt -Raw
+          $funasrSitePackages = $content.Trim()
+
+          # Create pyi_rthook.py
+          @'
+          import os, sys, pathlib
+          if sys.platform == 'win32' and getattr(sys, 'frozen', False):
+              base_dir = pathlib.Path(sys._MEIPASS)
+              for path in [base_dir / 'torch' / 'lib', base_dir / 'paddle' / 'libs']:
+                  if path.exists():
+                      try: os.add_dll_directory(str(path))
+                      except: pass
+'@ | Out-File -FilePath pyi_rthook.py -Encoding UTF8
+
+          # Build with PyInstaller using spec-like approach
+          pyinstaller --onefile --name funasr `
+            --add-data "$funasrSitePackages\funasr;funasr" `
+            --add-data "$funasrSitePackages\funasr_onnx;funasr_onnx" `
+            --add-data "$cythonPath;Cython" `
+            --add-binary "$funasrSitePackages\torch\lib\*.dll;torch/lib" `
+            --add-binary "$funasrSitePackages\paddle\libs\*.dll;paddle/libs" `
+            --collect-all torch `
+            --collect-all torchaudio `
+            --collect-all paddle `
+            --collect-all paddleocr `
+            --collect-all funasr `
+            --collect-all imageio `
+            --collect-all imgaug `
+            --hidden-import=funasr_onnx `
+            --hidden-import=funasr `
+            --hidden-import=librosa `
+            --hidden-import=soundfile `
+            --hidden-import=paddle `
+            --hidden-import=paddle.fluid `
+            --hidden-import=paddleocr `
+            --hidden-import=onnxruntime `
+            --hidden-import=numpy `
+            --hidden-import=cv2 `
+            --hidden-import=Cython `
+            --hidden-import=Cython.Compiler `
+            --hidden-import=Cython.Runtime `
+            --runtime-hook=pyi_rthook.py `
+            --exclude-module=torch.tests `
+            --exclude-module=torch.testing `
+            --exclude-module=torch.utils.tensorboard `
+            --exclude-module=paddle.tests `
+            --exclude-module=paddleOCR.tests `
+            main.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
