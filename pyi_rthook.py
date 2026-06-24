@@ -8,12 +8,12 @@ if getattr(sys, 'frozen', False):
     base_dir = pathlib.Path(sys._MEIPASS)
 
     if sys.platform.startswith('linux'):
-        # Find site-packages in bundle
+        # Find site-packages in bundle (PyInstaller onefile uses pythonX.Y/lib/ structure)
         candidates = [
-            base_dir / 'lib' / 'python3.9' / 'site-packages',
-            base_dir / 'lib' / 'python3.10' / 'site-packages',
-            base_dir / 'lib' / 'python3.11' / 'site-packages',
-            base_dir / 'lib' / 'python3.12' / 'site-packages',
+            base_dir / 'python3.9' / 'lib' / 'site-packages',
+            base_dir / 'python3.10' / 'lib' / 'site-packages',
+            base_dir / 'python3.11' / 'lib' / 'site-packages',
+            base_dir / 'python3.12' / 'lib' / 'site-packages',
         ]
         bundled_sp = None
         for sp in candidates:
@@ -35,16 +35,17 @@ if getattr(sys, 'frozen', False):
             if bundled_sp not in sys.path:
                 sys.path.insert(0, bundled_sp)
 
-            # Add parent lib directory too
-            lib_dir = os.path.dirname(bundled_sp)
+            # Add parent lib directory (python3.9/lib) to sys.path
+            lib_dir = os.path.dirname(bundled_sp)  # e.g. .../python3.9/lib
             if lib_dir not in sys.path:
                 sys.path.insert(0, lib_dir)
 
-        # Set LD_LIBRARY_PATH for paddle libs
+        # Set LD_LIBRARY_PATH for paddle libs (paddle libs sit under site-packages/paddle/libs)
         ld_path = os.environ.get('LD_LIBRARY_PATH', '')
-        for lib_dir in [base_dir / 'paddle' / 'libs', base_dir / 'paddlepaddle' / 'libs']:
-            if lib_dir.exists():
-                os.environ['LD_LIBRARY_PATH'] = f'{lib_dir}:{ld_path}'
+        for sp_candidate in candidates:
+            paddle_libs = sp_candidate / 'paddle' / 'libs'
+            if paddle_libs.exists():
+                os.environ['LD_LIBRARY_PATH'] = f'{paddle_libs}:{ld_path}'
                 break
 
     elif sys.platform == 'win32':
