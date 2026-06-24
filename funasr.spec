@@ -10,16 +10,15 @@ SITE_PACKAGES = site.getsitepackages()[0].replace('\\', '/')
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
 
 # funasr 包路径
-funasr_path = SITE_PACKAGES + '/funasr'
+funasr_path = os.path.join(SITE_PACKAGES, 'funasr').replace('\\', '/')
 
 datas = [
     (funasr_path, 'funasr'),
-    (SITE_PACKAGES + '/funasr_onnx', 'funasr_onnx'),
-    (SITE_PACKAGES + '/Cython', 'Cython'),
+    (os.path.join(SITE_PACKAGES, 'funasr_onnx').replace('\\', '/'), 'funasr_onnx'),
+    (os.path.join(SITE_PACKAGES, 'Cython').replace('\\', '/'), 'Cython'),
 ]
 binaries = [
-    (SITE_PACKAGES + '/torch/lib/*.dll', 'torch/lib'),
-    (SITE_PACKAGES + '/paddle/libs/*.dll', 'paddle/libs'),
+    (os.path.join(SITE_PACKAGES, 'paddle', 'libs', '*.dll').replace('\\', '/'), 'paddle/libs'),
 ]
 hiddenimports = [
     'funasr_onnx',
