@@ -61,6 +61,11 @@ def find_paddle_libs():
     return None
 
 PADDLE_LIBS_PATH = find_paddle_libs()
+print(f"[spec] SITE_PACKAGES={SITE_PACKAGES}")
+print(f"[spec] PADDLE_LIBS_PATH={PADDLE_LIBS_PATH}")
+import os
+if PADDLE_LIBS_PATH and os.path.isdir(PADDLE_LIBS_PATH):
+    print(f"[spec] paddle libs contents: {os.listdir(PADDLE_LIBS_PATH)[:5]}")
 
 datas = [
     (FUNASR_PATH, 'funasr'),
