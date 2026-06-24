@@ -1,9 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 import site
+import os
 
 # 获取 site-packages 路径（运行时动态获取）
 SITE_PACKAGES = site.getsitepackages()[0].replace('\\', '/')
+
+# 获取 SPEC 文件所在目录（用于 runtime hook 路径）
+SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
 
 # funasr 包路径
 funasr_path = SITE_PACKAGES + '/funasr'
@@ -78,7 +82,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['pyi_rthook.py'],
+    runtime_hooks=[os.path.join(SPEC_DIR, 'pyi_rthook.py')],
     excludes=[
         'torch.tests',
         'torch.testing',
