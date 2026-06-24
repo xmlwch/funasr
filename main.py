@@ -72,7 +72,11 @@ class FunASR:
                 if not self.__class__._initialized:
                     self.__class__._initialized = True
                     if getattr(sys, 'frozen', False):
-                        base_dir = os.path.dirname(os.path.abspath(sys.executable))
+                        # Linux: sys.executable 在临时目录，用 _MEIPASS 更可靠
+                        if hasattr(sys, '_MEIPASS'):
+                            base_dir = sys._MEIPASS
+                        else:
+                            base_dir = os.path.dirname(os.path.abspath(sys.executable))
                     else:
                         base_dir = os.path.dirname(os.path.abspath(__file__))
                     model_dir = os.environ.get("FUNASR_MODEL_DIR", os.path.join(base_dir, "model"))
@@ -154,7 +158,10 @@ class PPOCR:
                 if not hasattr(self, '_engine'):
                     from paddleocr import PaddleOCR
                     if getattr(sys, 'frozen', False):
-                        base_dir = os.path.dirname(os.path.abspath(sys.executable))
+                        if hasattr(sys, '_MEIPASS'):
+                            base_dir = sys._MEIPASS
+                        else:
+                            base_dir = os.path.dirname(os.path.abspath(sys.executable))
                     else:
                         base_dir = os.path.dirname(os.path.abspath(__file__))
                     ocr_model_dir = os.environ.get("FUNASR_OCR_MODEL_DIR", os.path.join(base_dir, "model", "paddleocr"))
