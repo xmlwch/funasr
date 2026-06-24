@@ -9,7 +9,6 @@ RUN sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
 
 COPY main.py .
 COPY requirements.txt .
-COPY hooks/ /build/hooks/
 COPY pyi_rthook.py /build/
 
 RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
@@ -24,7 +23,6 @@ RUN FUNASR_SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[
     cp -r $FUNASR_SITE_PACKAGES/paddle /build/funasr_pkg/ && \
     cp -r $FUNASR_SITE_PACKAGES/paddlepaddle /build/funasr_pkg/ 2>/dev/null || true && \
     pyinstaller --onefile \
-      --additional-hooks-dir /build/hooks \
       --runtime-hook /build/pyi_rthook.py \
       --add-data /build/funasr_pkg/funasr:funasr \
       --add-data /build/funasr_pkg/funasr_onnx:funasr_onnx \
