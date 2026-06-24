@@ -43,7 +43,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[os.path.join(SPEC_DIR, 'pyi_rthook.py')], # 确保 pyi_rthook.py 存在
+    runtime_hooks=[],
     excludes=[
         'torch.tests', 'torch.testing', 'torch.utils.tensorboard',
         'torch.utils.bottleneck', 'torch.utils.flopcounter',
