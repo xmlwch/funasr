@@ -9,7 +9,6 @@ RUN sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
 COPY main.py .
 COPY requirements.txt .
 COPY funasr.spec .
-COPY pyi_rthook.py .
 
 RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt pyinstaller
