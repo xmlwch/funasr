@@ -48,35 +48,13 @@ FUNASR_PATH = find_package_path('funasr') or os.path.join(SITE_PACKAGES, 'funasr
 FUNASR_ONNX_PATH = find_package_path('funasr_onnx') or os.path.join(SITE_PACKAGES, 'funasr_onnx').replace('\\', '/')
 CYTHON_PATH = find_package_path('Cython') or os.path.join(SITE_PACKAGES, 'Cython').replace('\\', '/')
 
-# 查找 paddle libs 路径
-def find_paddle_libs():
-    paddle_path = find_package_path('paddle')
-    if paddle_path:
-        libs_path = os.path.join(paddle_path, 'libs').replace('\\', '/')
-        if os.path.isdir(libs_path):
-            return libs_path
-    libs_path = os.path.join(SITE_PACKAGES, 'paddle', 'libs').replace('\\', '/')
-    if os.path.isdir(libs_path):
-        return libs_path
-    return None
-
-PADDLE_LIBS_PATH = find_paddle_libs()
-
 datas = [
     (FUNASR_PATH, 'funasr'),
     (FUNASR_ONNX_PATH, 'funasr_onnx'),
     (CYTHON_PATH, 'Cython'),
 ]
 
-# paddle libs - 根据平台选择文件类型
 binaries = []
-if PADDLE_LIBS_PATH:
-    import sys
-    if sys.platform == 'win32':
-        binaries.append((os.path.join(PADDLE_LIBS_PATH, '*.dll').replace('\\', '/'), 'paddle/libs'))
-    else:
-        binaries.append((os.path.join(PADDLE_LIBS_PATH, '*.so').replace('\\', '/'), 'paddle/libs'))
-
 hiddenimports = [
     'funasr_onnx',
     'funasr',
@@ -93,13 +71,12 @@ hiddenimports = [
     'Cython.Runtime',
 ]
 
-# 收集各模块
-for mod in ['torch', 'torchaudio', 'paddleocr', 'funasr', 'imageio', 'imgaug']:
+# 收集各模块 - 关键：添加 'paddle' 到列表中
+for mod in ['torch', 'torchaudio', 'paddle', 'paddleocr', 'funasr', 'imageio', 'imgaug']:
     tmp_ret = collect_all(mod)
     datas += tmp_ret[0]
     binaries += tmp_ret[1]
     hiddenimports += tmp_ret[2]
-
 
 a = Analysis(
     ['main.py'],
