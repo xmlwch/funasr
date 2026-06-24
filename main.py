@@ -38,11 +38,13 @@ if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
         if _sp.exists():
             _site.getsitepackages = lambda p=_sp: [str(p)]
             _site.USER_SITE = str(_sp)
+            print(f"[hook] site patched: getsitepackages={_site.getsitepackages()}, USER_SITE={_site.USER_SITE}")
             # 设置 LD_LIBRARY_PATH
             for _sub in ['paddle/libs', 'paddle/base']:
                 _pp = _sp / _sub
                 if _pp.exists():
                     os.environ['LD_LIBRARY_PATH'] = f'{_pp}:{os.environ.get("LD_LIBRARY_PATH","")}'
+            print(f"[hook] LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH','')}")
             break
 
 # 生产环境保护配置
