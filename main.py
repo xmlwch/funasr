@@ -37,19 +37,18 @@ if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
     import site as _site
     import pathlib as _pathlib
     _base = _pathlib.Path(sys._MEIPASS)
-    for _sp in [_base / f'lib/python{x}.{y}/site-packages' for x in [3] for y in range(8,14)] + \
-               [_base / f'python{x}.{y}/lib/site-packages' for x in [3] for y in range(8,14)]:
-        if _sp.exists():
-            _site.getsitepackages = lambda p=_sp: [str(p)]
-            _site.USER_SITE = str(_sp)
-            print(f"[hook] site patched: getsitepackages={_site.getsitepackages()}, USER_SITE={_site.USER_SITE}")
-            # 设置 LD_LIBRARY_PATH
-            for _sub in ['paddle/libs', 'paddle/base']:
-                _pp = _sp / _sub
-                if _pp.exists():
-                    os.environ['LD_LIBRARY_PATH'] = f'{_pp}:{os.environ.get("LD_LIBRARY_PATH","")}'
-            print(f"[hook] LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH','')}")
-            break
+    # 包直接放在 _MEIPASS 根目录，不是 lib/python3.9/site-packages
+    _meipass = str(_base)
+    _site.getsitepackages = lambda: [_meipass]
+    _site.USER_SITE = _meipass
+    print(f"[hook] site patched: getsitepackages={_site.getsitepackages()}, USER_SITE={_site.USER_SITE}")
+    # 设置 LD_LIBRARY_PATH（paddle/libs 和 paddle/base 都在 _MEIPASS 根目录）
+    for _sub in ['paddle/libs', 'paddle/base']:
+        _pp = _base / _sub
+        if _pp.exists():
+            os.environ['LD_LIBRARY_PATH'] = f'{_pp}:{os.environ.get("LD_LIBRARY_PATH","")}'
+            print(f"[hook] added {_pp} to LD_LIBRARY_PATH")
+    print(f"[hook] LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH','')}")
 
 # 生产环境保护配置
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 最大请求体 100MB
