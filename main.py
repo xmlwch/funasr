@@ -174,9 +174,10 @@ class PPOCR:
                         lang='ch',
                         det_model_dir=det_dir,
                         rec_model_dir=rec_dir,
-                        show_log=False
+                        show_log=False,
+                        use_onnx=True
                     )
-                    print("✓ OCR 模型加载完成 (PaddleOCR PP-OCRv4)")
+                    print("✓ OCR 模型加载完成 (PaddleOCR PP-OCRv4, ONNX后端)")
 
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
