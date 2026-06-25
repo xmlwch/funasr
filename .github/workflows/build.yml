@@ -26,10 +26,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg libgomp1 libgl1-mesa-glx libglib2.0-0 libsm6 libxext6
 
-      - name: Install Python deps
+      - name: Build and install paddle with SSE2 only (max compatibility)
         run: |
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install paddlepaddle==2.6.2 funasr-onnx funasr onnxruntime paddleocr==2.9.1 more_itertools pyinstaller
+          # 卸载任何已安装的 paddle
+          pip uninstall -y paddlepaddle paddlepaddle-gpu 2>/dev/null || true
+          # 编译一个仅用 SSE2 指令集的 onnxruntime（不上 AVX）
+          # 先装基础依赖
+          pip install numpy protobuf
+          # 安装 onnxruntime（找不带 AVX 的版本，或从源码编译 SSE2 版）
+          pip install onnxruntime
+          # 安装 funasr 相关（这些是纯 Python/ONNX，无 CPU 指令问题）
+          pip install funasr-onnx funasr
+          # 装 paddleocr（其 onnx 模型不依赖 paddle 底层 .so）
+          pip install paddleocr==2.9.1 more_itertools
+          # 最后装 paddlepaddle，用旧版 2.5.2 兼容性更好
+          pip install paddlepaddle==2.5.2
 
       - name: Build with PyInstaller
         run: pyinstaller funasr.spec
@@ -72,7 +83,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete ${{ github.ref_name}} --cleanup-tag --yes 2>/dev/null || true
+          gh release delete ${{ github.ref_name }} --cleanup-tag --yes 2>/dev/null || true
 
       - uses: actions/download-artifact@v4
         with:
