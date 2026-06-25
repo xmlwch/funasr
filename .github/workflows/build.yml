@@ -108,6 +108,10 @@ jobs:
             # 识别模型
             curl -L -o rec.tar https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_infer.tar
             tar -xf rec.tar && mv ch_PP-OCRv4_rec_infer rec/
+
+            # 方向分类模型（use_angle_cls=True 必需）
+            curl -L -o cls.tar https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_cls_infer.tar
+            tar -xf cls.tar && mv ch_PP-OCRv4_cls_infer cls/
             ```
 
             解压后目录结构：
@@ -118,7 +122,8 @@ jobs:
             ├── tokens.json
             └── paddleocr/
                 ├── det/
-                └── rec/
+                ├── rec/
+                └── cls/        # 文本方向分类（必需）
             ```
 
             或通过环境变量指定：

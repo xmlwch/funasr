@@ -43,6 +43,10 @@ tar -xf det.tar && mv ch_PP-OCRv4_det_infer det/
 # 识别模型
 curl -L -o rec.tar https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_infer.tar
 tar -xf rec.tar && mv ch_PP-OCRv4_rec_infer rec/
+
+# 方向分类模型（use_angle_cls=True 必需）
+curl -L -o cls.tar https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_cls_infer.tar
+tar -xf cls.tar && mv ch_PP-OCRv4_cls_infer cls/
 ```
 
 最终目录结构：
@@ -57,7 +61,8 @@ model/
 ├── configuration.json
 └── paddleocr/
     ├── det/
-    └── rec/
+    ├── rec/
+    └── cls/        # 文本方向分类（必需）
 ```
 
 或使用环境变量指定模型路径：
@@ -103,8 +108,8 @@ funasr-windows-x86_64.exe -port 5001
 ./funasr -f http://example.com/image.png
 ```
 
-支持的音频格式：`.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg`, `.aac`, `.wma`
-支持的图片格式：`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.tiff`, `.webp`
+支持的音频格式：`.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg`, `.aac`, `.wma`, `.opus`, `.ape`, `.ac3`
+支持的图片格式：`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.tiff`, `.webp`, `.tif`, `.jfif`
 
 ### HTTP 调用
 
