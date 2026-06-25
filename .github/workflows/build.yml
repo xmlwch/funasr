@@ -96,8 +96,17 @@ jobs:
 
             ## 模型文件
 
-            ### ASR 模型（SenseVoiceSmall）
-            下载地址：https://www.modelscope.cn/models/iic/SenseVoiceSmall
+            ### ASR 模型（SenseVoiceSmall - ONNX 版）
+            下载地址：https://www.modelscope.cn/models/iic/SenseVoiceSmall-onnx
+
+            ```bash
+            # INT8 量化版（推荐）
+            wget "https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo?Revision=master&FilePath=model_quant.onnx"
+            # 配套文件
+            for f in tokens.json config.yaml am.mvn configuration.json chn_jpn_yue_eng_ko_spectok.bpe.model; do
+              wget "https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo?Revision=master&FilePath=${f}"
+            done
+            ```
 
             ### OCR 模型（PaddleOCR PP-OCRv4）
             ```bash

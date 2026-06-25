@@ -19,12 +19,39 @@
 
 ### ASR 模型（SenseVoiceSmall）
 
-从 [ModelScope](https://www.modelscope.cn/models/iic/SenseVoiceSmall) 下载，目录结构：
+> ⚠️ 注意:`iic/SenseVoiceSmall` 是 **PyTorch** 版本,本项目用的是 **ONNX** 版本 `iic/SenseVoiceSmall-onnx`,请勿下错。
+
+从 [ModelScope 官方 ONNX 仓库](https://www.modelscope.cn/models/iic/SenseVoiceSmall-onnx/summary) 下载,推荐直接用 wget:
+
+```bash
+mkdir -p model && cd model
+
+BASE="https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo?Revision=master&FilePath="
+
+# INT8 量化版(funasr-onnx 默认加载的就是这个,CPU 推荐)
+wget "${BASE}model_quant.onnx"
+
+# 配套文件
+for f in tokens.json config.yaml am.mvn configuration.json chn_jpn_yue_eng_ko_spectok.bpe.model; do
+    wget "${BASE}${f}"
+done
+
+# 可选:FP32 原版
+wget "${BASE}model.onnx"
+```
+
+或用 ModelScope SDK:
+```python
+from modelscope import snapshot_download
+snapshot_download("iic/SenseVoiceSmall-onnx", local_dir="./model")
+```
+
+下载后目录结构:
 
 ```
 model/
-├── model.onnx
-├── model_quant.onnx
+├── model.onnx            # FP32(~250MB,可选)
+├── model_quant.onnx      # INT8 量化(~130MB,推荐)
 ├── tokens.json
 ├── config.yaml
 ├── am.mvn
