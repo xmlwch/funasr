@@ -39,12 +39,15 @@ except Exception as e:
 
 # 如果 collect_data_files 没有包含 Utility 目录，直接添加
 if not any('Cython' in str(d[0]) and 'Utility' in str(d[0]) for d in datas):
-    import Cython
-    cython_path = os.path.dirname(Cython.__file__)
-    utility_src = os.path.join(cython_path, 'Utility')
-    if os.path.exists(utility_src):
-        datas.append((utility_src, 'Cython/Utility'))
-        print(f"Added Cython/Utility from: {utility_src}")
+    try:
+        import Cython
+        cython_path = os.path.dirname(Cython.__file__)
+        utility_src = os.path.join(cython_path, 'Utility')
+        if os.path.exists(utility_src):
+            datas.append((utility_src, 'Cython/Utility'))
+            print(f"Added Cython/Utility from: {utility_src}")
+    except ImportError:
+        print("Warning: Cython not installed, skipping Cython/Utility collection (paddle may warn at runtime)")
 
 # 补充一些常见的隐藏导入，防止运行时 ModuleNotFoundError
 hiddenimports += [
