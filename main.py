@@ -69,8 +69,8 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 
 # 支持的文件后缀
-AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma'}
-IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp'}
+AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.opus', '.ape', '.ac3'}
+IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp', '.tif', '.jfif'}
 
 # 【关键修复】：从独立的 worker 模块导入循环函数，彻底解决 PyInstaller 打包报错
 from worker import elastic_worker_loop 
@@ -92,13 +92,16 @@ class ElasticProcessPool:
         self.monitor_thread.start()
 
     def start_worker(self):
-        with self.lock:
-            if len(self.workers) >= self.max_workers: return
-            p = mp.Process(target=elastic_worker_loop, 
-                           args=(self.task_queue, self.result_queue, self.worker_state, os.getpid(), self.idle_timeout))
-            p.start()
-            self.workers[p.pid] = p
-            print(f"[Pool] 启动新 Worker (PID: {p.pid})，当前总数: {len(self.workers)}")
+        # 【关键修复】：去掉内部的 with self.lock:！
+        # 因为调用此方法的 submit() 已经持有了锁，嵌套获取会导致死锁。
+        if len(self.workers) >= self.max_workers: return
+        
+        # 顺便把 os.getpid() 改成 0，因为 worker.py 里已经用 real_pid 覆盖了
+        p = mp.Process(target=elastic_worker_loop, 
+                       args=(self.task_queue, self.result_queue, self.worker_state, 0, self.idle_timeout))
+        p.start()
+        self.workers[p.pid] = p
+        print(f"[Pool] 启动新 Worker (PID: {p.pid})，当前总数: {len(self.workers)}")
 
     def submit(self, func_name, path):
         if self.is_shutting_down:
@@ -181,6 +184,13 @@ class Handler(BaseHTTPRequestHandler):
         else: self._json(404, {'code': 404, 'message': '未找到路由', 'data': None})
 
     def _handle_request(self, service_type):
+        # 【新增防御】：如果进程池还没有预热完成（没有 idle 的 worker），直接返回 503
+        if not pool.worker_state or all(s.get('status') != 'idle' for s in pool.worker_state.values()):
+            # 如果连 worker 都没有，或者都在 initializing/dead，拒绝请求
+            if not any(s.get('status') == 'idle' for s in pool.worker_state.values()):
+                self._json(503, {'code': 503, 'message': '服务正在启动/模型加载中，请稍后重试', 'data': None})
+                return
+
         tmp_path = None
         try:
             start_time = time.time()
@@ -289,7 +299,20 @@ if __name__ == '__main__':
         
         print("正在预热 1 套模型...")
         pool.start_worker()
-        time.sleep(5)
+        
+        # 【关键修复】：轮询等待 Worker 状态变为 idle，而不是死等 5 秒
+        print("等待模型加载完成...")
+        for i in range(60):  # 最多等 60 秒
+            time.sleep(1)
+            # 检查是否有任何 Worker 的状态变成了 idle
+            states = list(pool.worker_state.values())
+            if any(s.get('status') == 'idle' for s in states):
+                print("✓ 模型预热完成，可以接收请求！")
+                break
+            if i % 5 == 0:
+                print(f"  已等待 {i} 秒...")
+        else:
+            print("警告：等待超时，模型可能加载失败！")
         
         env_host = '127.0.0.1' if args.host == '0.0.0.0' else args.host
         with open(env_file, 'w') as f:

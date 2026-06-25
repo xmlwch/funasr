@@ -5,11 +5,13 @@ import queue
 
 
 def get_exe_dir():
-     if getattr(sys, 'frozen', False):
+    if getattr(sys, 'frozen', False):
         return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.abspath(__file__))
+    else:
+        return os.path.dirname(os.path.abspath(__file__))
 
 BASE_DIR = get_exe_dir()
+
 
 # ================= 子进程全局变量 =================
 _asr_model = None
@@ -19,7 +21,7 @@ def init_worker_processes():
     """进程池初始化：每个 Worker 启动时独立加载 ASR 和 OCR"""
     global _asr_model, _ocr_engine
     pid = os.getpid()
-    print(f"[Worker {pid}] 正在独立加载 AI 模型 (ASR + OCR)...")
+    print(f"[Worker {pid}] 正在加载模型文件 (ASR + OCR)...")
     
     # 1. 加载 ASR
     from funasr_onnx import SenseVoiceSmall
@@ -80,50 +82,59 @@ def run_ocr_inference(image_path: str) -> str:
     texts = []
     for line in result:
         for item in line:
-            if isinstance(item, list) and len(item) == 2:
-                text = item[1]
-                texts.append(text[0] if isinstance(text, tuple) else text)
+            if isinstance(item, list) and len(item) >= 2:
+                text_data = item[1]
+                if isinstance(text_data, tuple):
+                    texts.append(text_data[0])
+                else:
+                    texts.append(str(text_data))
     return "\n".join(texts)
 
 # ================= 弹性 Worker 循环 =================
-def elastic_worker_loop(task_queue, result_queue, worker_state, pid, idle_timeout):
-    """弹性 Worker 逻辑：加载模型 -> 循环接任务 -> 空闲超时且非最后一个则自杀。"""
-    init_worker_processes()
-    worker_state[pid] = {'status': 'idle', 'last_active': time.time()}
+def elastic_worker_loop(task_queue, result_queue, worker_state, pid_placeholder, idle_timeout):
+    # 【关键修复 1】：在子进程内部获取真实的 PID，覆盖掉主进程传来的占位符 0
+    real_pid = os.getpid()
     
+    # 【关键修复 2】：增加 try/except，防止模型加载失败时静默崩溃
+    try:
+        init_worker_processes()
+        worker_state[real_pid] = {'status': 'idle', 'last_active': time.time()}
+    except Exception as e:
+        print(f"[Worker {real_pid}] 模型加载失败: {e}")
+        worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
+        return  # 直接退出，让主进程的监控线程去清理
+
     while True:
-        # 【核心防御】：在 Windows 下捕获 Ctrl+C，防止子进程抛出 KeyboardInterrupt 崩溃
         try:
             task = task_queue.get(timeout=5.0)
         except queue.Empty:
-            state = worker_state.get(pid)
+            state = worker_state.get(real_pid)
             if state and (time.time() - state['last_active'] > idle_timeout):
                 alive_count = sum(1 for s in worker_state.values() if s.get('status') != 'dead')
                 if alive_count > 1:
-                    print(f"[Worker {pid}] 空闲超时，主动退出以释放资源。")
-                    worker_state[pid] = {'status': 'dead', 'last_active': time.time()}
+                    print(f"[Worker {real_pid}] 空闲超时，主动退出以释放资源。")
+                    worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
                     break
             continue
         except KeyboardInterrupt:
-            print(f"[Worker {pid}] 收到 Ctrl+C 信号，正在优雅退出...")
-            worker_state[pid] = {'status': 'dead', 'last_active': time.time()}
+            print(f"[Worker {real_pid}] 收到 Ctrl+C 信号，正在优雅退出...")
+            worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
             break
         
-        # 处理毒丸信号 (None)
         if task is None:
-            print(f"[Worker {pid}] 收到退出信号 (毒丸)，正在优雅退出...")
-            worker_state[pid] = {'status': 'dead', 'last_active': time.time()}
+            print(f"[Worker {real_pid}] 收到退出信号 (毒丸)，正在优雅退出...")
+            worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
             break
             
-        worker_state[pid] = {'status': 'busy', 'last_active': time.time()}
+        worker_state[real_pid] = {'status': 'busy', 'last_active': time.time()}
         try:
             res = run_asr_inference(task['path']) if task['func'] == 'asr' else run_ocr_inference(task['path'])
             result_queue.put((task['id'], res))
         except KeyboardInterrupt:
-            print(f"[Worker {pid}] 推理过程中收到 Ctrl+C 信号，中断并退出...")
-            worker_state[pid] = {'status': 'dead', 'last_active': time.time()}
+            print(f"[Worker {real_pid}] 推理过程中收到 Ctrl+C 信号，中断并退出...")
+            worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
             break
         except Exception as e:
             result_queue.put((task['id'], e))
             
-        worker_state[pid] = {'status': 'idle', 'last_active': time.time()}
+        worker_state[real_pid] = {'status': 'idle', 'last_active': time.time()}
