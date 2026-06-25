@@ -10,10 +10,7 @@ COPY main.py .
 COPY requirements.txt .
 COPY funasr.spec .
 
-# 使用 2.5.2 替代 2.6.2，旧版本对 CPU 指令集要求可能更宽松
 RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir paddlepaddle==2.5.2 && \
-    pip install --no-cache-dir pyinstaller more_itertools && \
-    pip install --no-cache-dir funasr-onnx funasr onnxruntime paddleocr==2.9.1
+    pip install --no-cache-dir -r requirements.txt pyinstaller
 
 RUN pyinstaller funasr.spec

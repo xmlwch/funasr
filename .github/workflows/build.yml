@@ -21,18 +21,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build inside Docker (glibc 2.28)
+      - name: Install system deps
         run: |
-          docker build --platform linux/${{ matrix.arch }} -t funasr-builder .
-          docker create --name funasr-tmp funasr-builder
-          docker cp funasr-tmp:/build/dist/funasr ./funasr-${{ matrix.name }}
-          docker rm funasr-tmp
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libgomp1 libgl1-mesa-glx libglib2.0-0 libsm6 libxext6
+
+      - name: Install Python deps
+        run: |
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install paddlepaddle==2.6.2 funasr-onnx funasr onnxruntime paddleocr==2.9.1 more_itertools pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller funasr.spec
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: funasr-${{ matrix.name }}
+          path: dist/funasr
 
   windows:
     runs-on: windows-2022
@@ -66,7 +72,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete ${{ github.ref_name }} --cleanup-tag --yes 2>/dev/null || true
+          gh release delete ${{ github.ref_name}} --cleanup-tag --yes 2>/dev/null || true
 
       - uses: actions/download-artifact@v4
         with:
