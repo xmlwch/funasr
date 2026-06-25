@@ -2,5 +2,4 @@ funasr-onnx
 funasr
 onnxruntime
 paddleocr
-paddlepaddle==3.2.2
 more_itertools
