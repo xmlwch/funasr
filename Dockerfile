@@ -13,15 +13,13 @@ COPY funasr.spec .
 RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt pyinstaller
 
-# ========== DEBUG: 检查 paddlepaddle 和崩溃原因 ==========
-RUN pip show paddlepaddle && \
-    echo "=== 检查 CPU 信息 ===" && \
-    lscpu && \
-    echo "=== 检查 glibc 版本 ===" && \
-    ldd --version && \
-    echo "=== 尝试 import paddle 获取 backtrace ===" && \
-    python -c "import paddle; print('paddle OK')" 2>&1 || \
-    (echo "=== 使用 gdb 抓取 backtrace ===" && \
-     gdb -batch -ex "run" -ex "bt" --args python -c "import paddle" 2>&1 | tail -50)
+# ========== DEBUG: 检查 paddlepaddle 安装和 SO ==========
+RUN set -e && \
+    pip show paddlepaddle && \
+    echo "=== 检查 SO 文件 ===" && \
+    find /usr/local/lib/python3.9 -name "libpaddle_infer.so" 2>/dev/null && \
+    python -c "import sys; print('\\n'.join(sys.path))" && \
+    python -c "import paddle; print(paddle.__file__)" && \
+    echo "paddle import OK"
 
 RUN pyinstaller funasr.spec
