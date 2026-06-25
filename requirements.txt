@@ -1,5 +1,5 @@
 funasr-onnx
 funasr
 onnxruntime
-paddleocr
+paddleocr==2.9.1
 more_itertools
