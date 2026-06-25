@@ -51,6 +51,13 @@ if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
     print(f"[hook] LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH','')}")
     # 禁用 Paddle 的 AVX 优化，避免 Illegal instruction
     os.environ['FLAGS_enable_avx'] = 'false'
+    os.environ['FLAGS_enable_avx512'] = 'false'
+    # 禁用 ONNX Runtime 的 AVX（如果使用）
+    os.environ['ONNXTAHO_USE_AVX'] = '0'
+    os.environ['ONNXTAHO_USE_AVX512'] = '0'
+    # 强制使用 SSE 等基础指令集
+    os.environ['OPENBLAS_NUM_THREADS'] = '4'
+    print("[hook] CPU feature flags disabled for AVX compatibility")
 
 # 生产环境保护配置
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 最大请求体 100MB
