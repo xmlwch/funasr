@@ -51,12 +51,22 @@ hiddenimports += [
     'librosa', 'soundfile', 'numpy', 'cv2', 'Cython',
     'Cython.Compiler', 'Cython.Runtime',
     'paddle.fluid', 'paddle.nn', 'paddle.tensor',
-    'paddle.optimizer', 'more_itertools'
+    'paddle.optimizer', 'more_itertools',
+    # 解决 PyInstaller multiprocessing pickle 问题 - 关键！
+    'worker', 'worker.elastic_worker_loop',
+    'worker.init_worker_processes',
+    'worker.run_asr_inference', 'worker.run_ocr_inference',
 ]
+
+# 收集 worker.py 作为额外数据文件
+worker_src = os.path.join(SPEC_DIR, 'worker.py')
+if os.path.exists(worker_src):
+    datas.append((worker_src, '.'))
+    print(f"Added worker.py to datas")
 
 a = Analysis(
     ['main.py'],
-    pathex=[],  # <--- 【关键修复】：必须为空！让 PyInstaller 自动处理 sys.path
+    pathex=[SPEC_DIR],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

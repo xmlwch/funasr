@@ -1,314 +1,237 @@
 import os
-import re
 import sys
-sys.__stdout__.write(f"[DEBUG] main.py starting, sys.platform={sys.platform}, frozen={getattr(sys,'frozen',False)}\n")
-sys.__stdout__.flush()
-
-
+import traceback
 import json
 import time
-import asyncio
 import shutil
 import argparse
 import tempfile
 import threading
 import urllib.request
+import multiprocessing as mp
+import queue
+import uuid
+import warnings
+import signal
 
-# Windows 环境下添加 torch DLL 搜索路径（兼容打包后的环境）
+# ================= 基础环境与警告屏蔽 =================
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+mp.freeze_support()
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
+
+os.environ['FLAGS_cpu_math_library_num_threads'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+
 if sys.platform == 'win32':
-    if getattr(sys, 'frozen', False):
-        base_dir = os.path.dirname(os.path.abspath(sys.executable))
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-    # 查找 torch lib 目录
-    possible_paths = [
-        os.path.join(base_dir, 'torch', 'lib'),
-        os.path.join(base_dir, 'Library', 'bin'),
-    ]
-    for path in possible_paths:
-        if os.path.exists(path):
-            try:
-                os.add_dll_directory(path)
-            except Exception:
-                pass
+    os.environ['FLAGS_use_mkldnn'] = '0'
+    os.environ['FLAGS_use_onednn'] = '0'
 
-# Linux 环境下修复 site 模块（PyInstaller 打包后 site.getsitepackages 和 USER_SITE 可能失效）
+# ================= 路径与环境兼容 =================
+def get_base_dir():
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS if hasattr(sys, '_MEIPASS') else os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+BASE_DIR = get_base_dir()
+
+if sys.platform == 'win32':
+    for path in [os.path.join(BASE_DIR, 'torch', 'lib'), os.path.join(BASE_DIR, 'Library', 'bin')]:
+        if os.path.exists(path):
+            try: os.add_dll_directory(path)
+            except Exception: pass
+
 if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
     import site as _site
     import pathlib as _pathlib
-    _base = _pathlib.Path(sys._MEIPASS)
-    # 包直接放在 _MEIPASS 根目录，不是 lib/python3.9/site-packages
-    _meipass = str(_base)
-    _site.getsitepackages = lambda: [_meipass]
-    _site.USER_SITE = _meipass
-    print(f"[hook] site patched: getsitepackages={_site.getsitepackages()}, USER_SITE={_site.USER_SITE}")
-    # 设置 LD_LIBRARY_PATH（paddle/libs 和 paddle/base 都在 _MEIPASS 根目录）
+    _base = _pathlib.Path(BASE_DIR)
+    _site.getsitepackages = lambda: [str(_base)]
+    _site.USER_SITE = str(_base)
     for _sub in ['paddle/libs', 'paddle/base']:
         _pp = _base / _sub
         if _pp.exists():
             os.environ['LD_LIBRARY_PATH'] = f'{_pp}:{os.environ.get("LD_LIBRARY_PATH","")}'
-            print(f"[hook] added {_pp} to LD_LIBRARY_PATH")
-    print(f"[hook] LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH','')}")
-    # 禁用 Paddle 的 AVX 优化，避免 Illegal instruction
-    os.environ['FLAGS_enable_avx'] = 'false'
 
-# 生产环境保护配置
-MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 最大请求体 100MB
-INFERENCE_TIMEOUT = 300  # 推理超时 300 秒
-DOWNLOAD_TIMEOUT = 60   # 下载超时 60 秒
+# ================= 生产环境配置 =================
+MAX_CONTENT_LENGTH = 100 * 1024 * 1024
+INFERENCE_TIMEOUT = 300
+DOWNLOAD_TIMEOUT = 60
+IDLE_TIMEOUT = 300
 
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-from funasr.utils.postprocess_utils import rich_transcription_postprocess
-from funasr_onnx import SenseVoiceSmall
+# ================= 导入 Worker 函数 =================
+# 从独立 worker 模块导入（解决 PyInstaller multiprocessing pickle 问题）
+try:
+    from worker import run_worker, BASE_DIR as WORKER_BASE_DIR
+    # 合并 BASE_DIR（兼容 PyInstaller 打包后的路径）
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        BASE_DIR = sys._MEIPASS
+except ImportError:
+    # 开发模式下使用本地路径
+    pass
 
+# 支持的文件后缀
+AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.opus', '.ape', '.ac3'}
+IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp', '.tif', '.jfif'}
 
-class FunASR:
-    _instance = None
-    _lock = threading.Lock()
-    _initialized = False
+# ================= 弹性进程池管理器 =================
+class ElasticProcessPool:
+    def __init__(self, max_workers, idle_timeout):
+        self.max_workers = max_workers
+        self.idle_timeout = idle_timeout
+        self.task_queue = mp.Queue()
+        self.result_queue = mp.Queue()
+        self.manager = mp.Manager()
+        self.worker_state = self.manager.dict()
+        self.workers = {}
+        self.lock = threading.Lock()
+        self.is_shutting_down = False
+        
+        self.monitor_thread = threading.Thread(target=self._monitor_workers, daemon=True)
+        self.monitor_thread.start()
 
-    def __init__(self):
-        if not self.__class__._initialized:
-            with self.__class__._lock:
-                if not self.__class__._initialized:
-                    self.__class__._initialized = True
-                    if getattr(sys, 'frozen', False):
-                        # Linux: sys.executable 在临时目录，用 _MEIPASS 更可靠
-                        if hasattr(sys, '_MEIPASS'):
-                            base_dir = sys._MEIPASS
-                        else:
-                            base_dir = os.path.dirname(os.path.abspath(sys.executable))
-                    else:
-                        base_dir = os.path.dirname(os.path.abspath(__file__))
-                    model_dir = os.environ.get("FUNASR_MODEL_DIR", os.path.join(base_dir, "model"))
-                    self.model = SenseVoiceSmall(model_dir, batch_size=1, quantize=True, intra_op_num_threads=4)
-                    # self.model = SenseVoiceSmall(model_dir, batch_size=10, quantize=True, intra_op_num_threads=64)
-                    print("✓ 语音模型加载完成 (SenseVoiceSmall)")
+    def start_worker(self):
+        with self.lock:
+            if len(self.workers) >= self.max_workers: return
+            p = mp.Process(target=run_worker,
+                           args=(self.task_queue, self.result_queue, self.worker_state, 0, self.idle_timeout))  # pid=0 占位，worker 内部使用自己的真实 PID
+            p.start()
+            self.workers[p.pid] = p
+            print(f"[Pool] 启动新 Worker (PID: {p.pid})，当前总数: {len(self.workers)}")
 
-    def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            with cls._lock:
-                if not cls._instance:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
+    def submit(self, func_name, path):
+        if self.is_shutting_down:
+            raise RuntimeError("服务正在关闭，拒绝新请求")
+            
+        task_id = uuid.uuid4().hex
+        self.task_queue.put({'id': task_id, 'func': func_name, 'path': path})
+        
+        with self.lock:
+            alive_pids = [pid for pid in self.workers if self.workers[pid].is_alive()]
+            busy_pids = [pid for pid in alive_pids if self.worker_state.get(pid, {}).get('status') == 'busy']
+            if len(busy_pids) == len(alive_pids) and len(alive_pids) < self.max_workers:
+                self.start_worker()
+                
+        start_time = time.time()
+        while True:
+            if self.is_shutting_down:
+                raise RuntimeError("服务正在关闭，推理被中断")
+            try:
+                res_id, res_data = self.result_queue.get(timeout=1.0)
+                if res_id == task_id:
+                    if isinstance(res_data, Exception): raise res_data
+                    return res_data
+            except queue.Empty:
+                if time.time() - start_time > INFERENCE_TIMEOUT:
+                    raise TimeoutError("推理超时")
 
-    @staticmethod
-    def _clean_text(text):
-        return rich_transcription_postprocess(text)
+    def shutdown(self):
+        self.is_shutting_down = True
+        print("[Pool] 正在发送退出信号 (毒丸)...")
+        for _ in range(self.max_workers):
+            self.task_queue.put(None)
+            
+        print("[Pool] 等待 Worker 进程退出...")
+        with self.lock:
+            for pid, p in list(self.workers.items()):
+                p.join(timeout=5)
+                if p.is_alive():
+                    print(f"[Pool] Worker (PID: {pid}) 未响应，强制终止。")
+                    p.terminate()
+                    p.join(timeout=2)
+            self.workers.clear()
+            
+        try: self.manager.shutdown()
+        except Exception: pass
+        print("[Pool] 所有 Worker 已安全退出。")
 
-    def _generate_audio(self, audio_path):
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError("文件不存在: %s" % audio_path)
-        res = self.model(audio_path, language="auto", use_itn=True)
-        if isinstance(res, list) and len(res) > 0:
-            return self._clean_text(res[0])
-        return self._clean_text(str(res))
+    def _monitor_workers(self):
+        while True:
+            time.sleep(10)
+            with self.lock:
+                dead_pids = [pid for pid in self.workers if not self.workers[pid].is_alive()]
+                for pid in dead_pids:
+                    self.workers.pop(pid, None)
+                    self.worker_state.pop(pid, None)
 
-    @staticmethod
-    def _download_http(url):
-        fd, tmp_path = tempfile.mkstemp(suffix="_audio")
-        os.close(fd)
-        try:
-            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as resp:
-                # 检查文件大小
-                content_length = resp.headers.get('Content-Length')
-                if content_length and int(content_length) > MAX_CONTENT_LENGTH:
-                    os.unlink(tmp_path)
-                    raise ValueError("文件大小超过限制: %dMB" % (MAX_CONTENT_LENGTH // 1024 // 1024))
-                with open(tmp_path, "wb") as f:
-                    shutil.copyfileobj(resp, f)
-        except Exception:
-            os.unlink(tmp_path)
-            raise
+# ================= 辅助函数与 HTTP 服务器 =================
+def download_http_file(url: str, suffix: str) -> str:
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    try:
+        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as resp:
+            content_length = resp.headers.get('Content-Length')
+            if content_length and int(content_length) > MAX_CONTENT_LENGTH:
+                os.unlink(tmp_path); raise ValueError("文件大小超过限制")
+            with open(tmp_path, "wb") as f: shutil.copyfileobj(resp, f)
         return tmp_path
+    except Exception:
+        if os.path.exists(tmp_path): os.unlink(tmp_path)
+        raise
 
-    async def get_audio_content(self, audio_path):
-        tmp_path = None
-        try:
-            loop = asyncio.get_running_loop()
-            if audio_path.startswith(("http://", "https://")):
-                real_path = await asyncio.wait_for(
-                    loop.run_in_executor(None, self._download_http, audio_path),
-                    timeout=DOWNLOAD_TIMEOUT
-                )
-                tmp_path = real_path
-            else:
-                real_path = audio_path
-            # 检查本地文件大小
-            if os.path.getsize(real_path) > MAX_CONTENT_LENGTH:
-                raise ValueError("文件大小超过限制: %dMB" % (MAX_CONTENT_LENGTH // 1024 // 1024))
-            text = await asyncio.wait_for(
-                loop.run_in_executor(None, self._generate_audio, real_path),
-                timeout=INFERENCE_TIMEOUT
-            )
-            return text
-        except asyncio.TimeoutError:
-            raise TimeoutError("推理超时，请检查文件或降低并发")
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-
-class PPOCR:
-    _instance = None
-    _lock = threading.Lock()
-
-    def __init__(self):
-        if not hasattr(self, '_engine'):
-            with self.__class__._lock:
-                if not hasattr(self, '_engine'):
-                    from paddleocr import PaddleOCR
-                    if getattr(sys, 'frozen', False):
-                        if hasattr(sys, '_MEIPASS'):
-                            base_dir = sys._MEIPASS
-                        else:
-                            base_dir = os.path.dirname(os.path.abspath(sys.executable))
-                    else:
-                        base_dir = os.path.dirname(os.path.abspath(__file__))
-                    ocr_model_dir = os.environ.get("FUNASR_OCR_MODEL_DIR", os.path.join(base_dir, "model", "paddleocr"))
-                    det_dir = os.path.join(ocr_model_dir, "det")
-                    rec_dir = os.path.join(ocr_model_dir, "rec")
-                    self._engine = PaddleOCR(
-                        use_angle_cls=False,
-                        lang='ch',
-                        det_model_dir=det_dir,
-                        rec_model_dir=rec_dir,
-                        show_log=False,
-                        use_onnx=True
-                    )
-                    print("✓ OCR 模型加载完成 (PaddleOCR PP-OCRv4, ONNX后端)")
-
-    def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            with cls._lock:
-                if not cls._instance:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
-
-    @staticmethod
-    def _download_http(url):
-        fd, tmp_path = tempfile.mkstemp(suffix="_image")
-        os.close(fd)
-        try:
-            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as resp:
-                # 检查文件大小
-                content_length = resp.headers.get('Content-Length')
-                if content_length and int(content_length) > MAX_CONTENT_LENGTH:
-                    os.unlink(tmp_path)
-                    raise ValueError("文件大小超过限制: %dMB" % (MAX_CONTENT_LENGTH // 1024 // 1024))
-                with open(tmp_path, "wb") as f:
-                    shutil.copyfileobj(resp, f)
-        except Exception:
-            os.unlink(tmp_path)
-            raise
-        return tmp_path
-
-    def _generate_text(self, image_path):
-        if not os.path.exists(image_path):
-            raise FileNotFoundError("文件不存在: %s" % image_path)
-        result = self._engine.ocr(image_path)
-        if result is None or len(result) == 0:
-            return ""
-        texts = []
-        for line in result:
-            if line:
-                for item in line:
-                    if isinstance(item, list) and len(item) == 2:
-                        text = item[1]
-                        if isinstance(text, tuple):
-                            texts.append(text[0])
-                        else:
-                            texts.append(text)
-        return "\n".join(texts)
-
-    async def get_text_content(self, image_path):
-        tmp_path = None
-        try:
-            loop = asyncio.get_running_loop()
-            if image_path.startswith(("http://", "https://")):
-                real_path = await asyncio.wait_for(
-                    loop.run_in_executor(None, self._download_http, image_path),
-                    timeout=DOWNLOAD_TIMEOUT
-                )
-                tmp_path = real_path
-            else:
-                real_path = image_path
-            # 检查本地文件大小
-            if os.path.getsize(real_path) > MAX_CONTENT_LENGTH:
-                raise ValueError("文件大小超过限制: %dMB" % (MAX_CONTENT_LENGTH // 1024 // 1024))
-            text = await asyncio.wait_for(
-                loop.run_in_executor(None, self._generate_text, real_path),
-                timeout=INFERENCE_TIMEOUT
-            )
-            return text
-        except asyncio.TimeoutError:
-            raise TimeoutError("推理超时，请检查文件或降低并发")
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
+pool = None
 
 class Handler(BaseHTTPRequestHandler):
+    request_queue_size = 128
 
     def do_POST(self):
-        if self.path == '/funasr/identify':
-            try:
-                start_time = time.time()
-                length = int(self.headers.get('Content-Length', 0))
-                # 检查请求体大小
-                if length > MAX_CONTENT_LENGTH:
-                    self._json(413, {'code': 413, 'message': '请求体过大，最大 %dMB' % (MAX_CONTENT_LENGTH // 1024 // 1024), 'data': None})
-                    return
-                body = json.loads(self.rfile.read(length).decode('utf-8'))
-                filepath = body.get('filepath')
-                if not filepath:
-                    self._json(400, {'code': 400, 'message': '缺少 filepath 参数', 'data': None})
-                    return
-                text = asyncio.run(FunASR().get_audio_content(filepath))
-                duration = time.time() - start_time
-                self._json(200, {'code': 200, 'message': '识别成功', 'data': text, 'duration': duration})
-            except TimeoutError as e:
-                self._json(408, {'code': 408, 'message': str(e), 'data': None})
-            except ValueError as e:
-                self._json(400, {'code': 400, 'message': str(e), 'data': None})
-            except FileNotFoundError as e:
-                self._json(400, {'code': 400, 'message': str(e), 'data': None})
-            except Exception as e:
-                print(e)
-                self._json(400, {'code': 400, 'message': '当前系统繁忙，请稍后重试', 'data': None})
-        elif self.path == '/ocr/identify':
-            try:
-                start_time = time.time()
-                length = int(self.headers.get('Content-Length', 0))
-                # 检查请求体大小
-                if length > MAX_CONTENT_LENGTH:
-                    self._json(413, {'code': 413, 'message': '请求体过大，最大 %dMB' % (MAX_CONTENT_LENGTH // 1024 // 1024), 'data': None})
-                    return
-                body = json.loads(self.rfile.read(length).decode('utf-8'))
-                filepath = body.get('filepath')
-                if not filepath:
-                    self._json(400, {'code': 400, 'message': '缺少 filepath 参数', 'data': None})
-                    return
-                text = asyncio.run(PPOCR().get_text_content(filepath))
-                duration = time.time() - start_time
-                self._json(200, {'code': 200, 'message': '识别成功', 'data': text, 'duration': duration})
-            except TimeoutError as e:
-                self._json(408, {'code': 408, 'message': str(e), 'data': None})
-            except ValueError as e:
-                self._json(400, {'code': 400, 'message': str(e), 'data': None})
-            except FileNotFoundError as e:
-                self._json(400, {'code': 400, 'message': str(e), 'data': None})
-            except Exception as e:
-                print(e)
-                self._json(400, {'code': 400, 'message': '当前系统繁忙，请稍后重试', 'data': None})
-        else:
-            self._json(404, {'code': 404, 'message': '未找到路由', 'data': None})
+        if self.path == '/funasr/identify': self._handle_request('asr')
+        elif self.path == '/ocr/identify': self._handle_request('ocr')
+        else: self._json(404, {'code': 404, 'message': '未找到路由', 'data': None})
+
+    def _handle_request(self, service_type):
+        tmp_path = None
+        try:
+            start_time = time.time()
+            length = int(self.headers.get('Content-Length', 0))
+            if length > MAX_CONTENT_LENGTH:
+                self._json(413, {'code': 413, 'message': '请求体过大', 'data': None}); return
+
+        
+            body = json.loads(self.rfile.read(length).decode('utf-8'))
+            filepath = body.get('filepath')
+            if not filepath:
+                self._json(400, {'code': 400, 'message': '缺少 filepath 参数', 'data': None}); return
+
+            # 验证文件后缀
+            ext = os.path.splitext(filepath)[1].lower()
+            if service_type == 'asr' and ext not in AUDIO_EXTS:
+                self._json(400, {'code': 400, 'message': f'ASR 端点不支持文件类型: {ext}，支持的格式: {", ".join(sorted(AUDIO_EXTS))}', 'data': None}); return
+            if service_type == 'ocr' and ext not in IMAGE_EXTS:
+                self._json(400, {'code': 400, 'message': f'OCR 端点不支持文件类型: {ext}，支持的格式: {", ".join(sorted(IMAGE_EXTS))}', 'data': None}); return
+
+            if filepath.startswith(("http://", "https://")):
+                suffix = "_audio" if service_type == "asr" else "_image"
+                tmp_path = download_http_file(filepath, suffix)
+                real_path = tmp_path
+            else:
+                real_path = filepath
+                if os.path.getsize(real_path) > MAX_CONTENT_LENGTH:
+                    raise ValueError("文件大小超过限制")
+
+            text = pool.submit(service_type, real_path)
+            duration = time.time() - start_time
+            self._json(200, {'code': 200, 'message': '识别成功', 'data': text, 'duration': round(duration, 3)})
+            
+        except TimeoutError:
+            self._json(408, {'code': 408, 'message': '推理超时', 'data': None})
+        except (ValueError, FileNotFoundError) as e:
+            self._json(400, {'code': 400, 'message': str(e), 'data': None})
+        except Exception as e:
+            status_code = 503 if "正在关闭" in str(e) else 500
+            self._json(status_code, {'code': status_code, 'message': str(e) or '系统繁忙', 'data': None})
+        finally:
+            if tmp_path and os.path.exists(tmp_path): os.unlink(tmp_path)
 
     def do_GET(self):
-        if self.path == '/funasr/health':
-            self._json(200, {'code': 200, 'status': 'ok'})
-        elif self.path == '/ocr/health':
+        if self.path in ['/funasr/health', '/ocr/health']:
             self._json(200, {'code': 200, 'status': 'ok'})
         else:
             self._json(405, {'code': 405, 'message': '仅支持 POST', 'data': None})
@@ -337,78 +260,72 @@ if __name__ == '__main__':
             with open(env_file, 'r') as f:
                 for line in f:
                     line = line.strip()
-                    if line.startswith('FUNASR_HOST='):
-                        host = line.split('=', 1)[1]
-                    elif line.startswith('FUNASR_PORT='):
-                        port = int(line.split('=', 1)[1])
+                    if line.startswith('FUNASR_HOST='): host = line.split('=', 1)[1]
+                    elif line.startswith('FUNASR_PORT='): port = int(line.split('=', 1)[1])
         return host, port
 
     env_host, env_port = read_env()
-
     parser = argparse.ArgumentParser()
-    parser.add_argument('-host', default=env_host or '127.0.0.1', help='绑定IP (默认: 127.0.0.1)')
-    parser.add_argument('-port', type=int, default=env_port or 5001, help='监听端口 (默认: 5001)')
-    parser.add_argument('-f', type=str, default=None, help='直接识别音频文件或URL，输出文本后退出')
+    parser.add_argument('-host', default=env_host or '127.0.0.1')
+    parser.add_argument('-port', type=int, default=env_port or 5001)
+    parser.add_argument('-workers', type=int, default=16)
+    parser.add_argument('-idle', type=int, default=IDLE_TIMEOUT)
+    parser.add_argument('-f', type=str, default=None)
     args = parser.parse_args()
 
     if args.f:
-        # 根据文件扩展名自动识别类型
-        AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma'}
-        IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp'}
-
         ext = os.path.splitext(args.f)[1].lower()
-        if ext in AUDIO_EXTS:
-            service = 'funasr'
-        elif ext in IMAGE_EXTS:
-            service = 'ocr'
-        else:
-            print('错误: 不支持的文件类型: %s' % ext, file=sys.stderr)
-            print('支持的音频格式: %s' % ', '.join(AUDIO_EXTS), file=sys.stderr)
-            print('支持的图片格式: %s' % ', '.join(IMAGE_EXTS), file=sys.stderr)
-            sys.exit(1)
+        if ext in AUDIO_EXTS: service = 'funasr'
+        elif ext in IMAGE_EXTS: service = 'ocr'
+        else: print('错误: 不支持的文件类型', file=sys.stderr); sys.exit(1)
 
         base = 'http://%s:%d' % (args.host, args.port)
-        try:
-            urllib.request.urlopen(base + '/' + service + '/health', timeout=3)
-        except Exception:
-            print('错误: 服务未启动，请先执行 funasr -host %s -port %d' % (args.host, args.port), file=sys.stderr)
-            sys.exit(1)
+        try: urllib.request.urlopen(base + '/' + service + '/health', timeout=3)
+        except Exception: print('错误: 服务未启动', file=sys.stderr); sys.exit(1)
         req = json.dumps({'filepath': args.f}).encode('utf-8')
         resp = urllib.request.urlopen(base + '/' + service + '/identify', data=req, timeout=300)
         result = json.loads(resp.read().decode('utf-8'))
-        if result['code'] == 200:
-            print(result['data'])
-        else:
-            print('错误: %s' % result['message'], file=sys.stderr)
-            sys.exit(1)
+        if result['code'] == 200: print(result['data'])
+        else: print('错误: %s' % result['message'], file=sys.stderr)
     else:
-        print('=' * 50)
-        print('FunASR 语音识别服务')
-        print('  - 语音识别: SenseVoiceSmall')
-        print('  - 文字识别: PaddleOCR PP-OCRv4')
-        print('=' * 50)
-        print('正在加载语音模型...')
-        FunASR()
-        print('正在加载 OCR 模型...')
-        PPOCR()
-        print('')
+        print('=' * 60)
+        print('FunASR & PaddleOCR 弹性伸缩多进程服务')
+        print('=' * 60)
+        
+        pool = ElasticProcessPool(max_workers=args.workers, idle_timeout=args.idle)
+        
+        print("正在预热 1 套模型...")
+        pool.start_worker()
+        time.sleep(5)
+        
         env_host = '127.0.0.1' if args.host == '0.0.0.0' else args.host
         with open(env_file, 'w') as f:
             f.write('FUNASR_HOST=%s\n' % env_host)
             f.write('FUNASR_PORT=%d\n' % args.port)
+            
         server = ThreadingHTTPServer((args.host, args.port), Handler)
-        print('服务已启动: http://%s:%d' % (args.host, args.port))
-        print('  POST /funasr/identify  - 语音识别')
-        print('  POST /ocr/identify     - 文字识别')
-        print('  GET  /funasr/health   - ASR 健康检查')
-        print('  GET  /ocr/health      - OCR 健康检查')
-        print('')
-        print('按 Ctrl+C 停止服务')
+        
+        def graceful_shutdown(signum, frame):
+            print('\n\n[Server] 收到退出信号，正在准备优雅关闭...')
+            threading.Thread(target=server.shutdown, daemon=True).start()
+            
+        signal.signal(signal.SIGINT, graceful_shutdown)
+        signal.signal(signal.SIGTERM, graceful_shutdown)
+        
+        print(f'\n服务已启动: http://{args.host}:{args.port}')
+        print(f'弹性配置: 最大 {args.workers} 个 Worker | 空闲 {args.idle}秒 后自动缩容至 1 个')
+        print('提示: 支持 Ctrl+C 或 kill 命令优雅退出。按 Ctrl+C 停止服务\n')
+        
         try:
             server.serve_forever()
-        except KeyboardInterrupt:
-            print('\n正在停止服务...')
-            server.shutdown()
         finally:
-            if os.path.exists(env_file):
+            print("[Server] 停止接收新请求，正在清理资源...")
+            server.server_close()
+            
+            if pool:
+                pool.shutdown()
+                
+            if os.path.exists(env_file): 
                 os.unlink(env_file)
+                
+            print("[Server] 服务已完全停止，所有资源已释放。")
