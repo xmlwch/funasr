@@ -54,7 +54,7 @@ hiddenimports += [
     'paddle.optimizer', 'more_itertools',
     
     # 【关键新增】：强制打包我们拆分出来的 worker 模块！
-    # 这是解决 PyInstaller 多进程 AttributeError 的核心
+    # 这是解决 PyInstaller 多进程 AttributeError 和 ModuleNotFoundError 的核心
     'worker'
 ]
 
@@ -67,9 +67,9 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     
-    # 【关键修改】：清空自定义的 runtime_hooks。
+    # 【关键修改】：清空自定义 runtime_hooks。
     # 采用拆分 worker.py 的标准方案后，PyInstaller 内置的多进程支持已足够，
-    # 移除自定义 hook 可避免潜在的冲突和找不到文件的报错。
+    # 且我们在 main.py 中显式调用了 mp.freeze_support()，移除自定义 hook 可避免冲突。
     runtime_hooks=[], 
     
     excludes=[
