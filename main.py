@@ -49,6 +49,8 @@ if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
             os.environ['LD_LIBRARY_PATH'] = f'{_pp}:{os.environ.get("LD_LIBRARY_PATH","")}'
             print(f"[hook] added {_pp} to LD_LIBRARY_PATH")
     print(f"[hook] LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH','')}")
+    # 禁用 Paddle 的 AVX 优化，避免 Illegal instruction
+    os.environ['FLAGS_enable_avx'] = 'false'
 
 # 生产环境保护配置
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 最大请求体 100MB
