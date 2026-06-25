@@ -18,6 +18,7 @@ import signal
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+# 【PyInstaller 关键】：多进程支持必须放在最前面
 mp.freeze_support()
 try:
     mp.set_start_method('spawn', force=True)
@@ -66,20 +67,13 @@ IDLE_TIMEOUT = 300
 
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-# ================= 导入 Worker 函数 =================
-# 从独立 worker 模块导入（解决 PyInstaller multiprocessing pickle 问题）
-try:
-    from worker import run_worker, BASE_DIR as WORKER_BASE_DIR
-    # 合并 BASE_DIR（兼容 PyInstaller 打包后的路径）
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        BASE_DIR = sys._MEIPASS
-except ImportError:
-    # 开发模式下使用本地路径
-    pass
 
 # 支持的文件后缀
-AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.opus', '.ape', '.ac3'}
-IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp', '.tif', '.jfif'}
+AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma'}
+IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp'}
+
+# 【关键修复】：从独立的 worker 模块导入循环函数，彻底解决 PyInstaller 打包报错
+from worker import elastic_worker_loop 
 
 # ================= 弹性进程池管理器 =================
 class ElasticProcessPool:
@@ -100,8 +94,8 @@ class ElasticProcessPool:
     def start_worker(self):
         with self.lock:
             if len(self.workers) >= self.max_workers: return
-            p = mp.Process(target=run_worker,
-                           args=(self.task_queue, self.result_queue, self.worker_state, 0, self.idle_timeout))  # pid=0 占位，worker 内部使用自己的真实 PID
+            p = mp.Process(target=elastic_worker_loop, 
+                           args=(self.task_queue, self.result_queue, self.worker_state, os.getpid(), self.idle_timeout))
             p.start()
             self.workers[p.pid] = p
             print(f"[Pool] 启动新 Worker (PID: {p.pid})，当前总数: {len(self.workers)}")
@@ -193,12 +187,11 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             if length > MAX_CONTENT_LENGTH:
                 self._json(413, {'code': 413, 'message': '请求体过大', 'data': None}); return
-
-        
+                
             body = json.loads(self.rfile.read(length).decode('utf-8'))
             filepath = body.get('filepath')
             if not filepath:
-                self._json(400, {'code': 400, 'message': '缺少 filepath 参数', 'data': None}); return
+                self._json(400, {'code': 400, 'message': '缺少 filepath 参数', 'data': None}); return        
 
             # 验证文件后缀
             ext = os.path.splitext(filepath)[1].lower()
@@ -321,11 +314,6 @@ if __name__ == '__main__':
         finally:
             print("[Server] 停止接收新请求，正在清理资源...")
             server.server_close()
-            
-            if pool:
-                pool.shutdown()
-                
-            if os.path.exists(env_file): 
-                os.unlink(env_file)
-                
+            if pool: pool.shutdown()
+            if os.path.exists(env_file): os.unlink(env_file)
             print("[Server] 服务已完全停止，所有资源已释放。")

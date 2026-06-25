@@ -52,27 +52,26 @@ hiddenimports += [
     'Cython.Compiler', 'Cython.Runtime',
     'paddle.fluid', 'paddle.nn', 'paddle.tensor',
     'paddle.optimizer', 'more_itertools',
-    # 解决 PyInstaller multiprocessing pickle 问题 - 关键！
-    'worker', 'worker.elastic_worker_loop',
-    'worker.init_worker_processes',
-    'worker.run_asr_inference', 'worker.run_ocr_inference',
+    
+    # 【关键新增】：强制打包我们拆分出来的 worker 模块！
+    # 这是解决 PyInstaller 多进程 AttributeError 的核心
+    'worker'
 ]
-
-# 收集 worker.py 作为额外数据文件
-worker_src = os.path.join(SPEC_DIR, 'worker.py')
-if os.path.exists(worker_src):
-    datas.append((worker_src, '.'))
-    print(f"Added worker.py to datas")
 
 a = Analysis(
     ['main.py'],
-    pathex=[SPEC_DIR],
+    pathex=[SPEC_DIR],  # 确保 PyInstaller 能在 SPEC 同级目录找到 worker.py
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    
+    # 【关键修改】：清空自定义的 runtime_hooks。
+    # 采用拆分 worker.py 的标准方案后，PyInstaller 内置的多进程支持已足够，
+    # 移除自定义 hook 可避免潜在的冲突和找不到文件的报错。
+    runtime_hooks=[], 
+    
     excludes=[
         'torch.tests', 'torch.testing', 'torch.utils.tensorboard',
         'torch.utils.bottleneck', 'torch.utils.flopcounter',
