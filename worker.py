@@ -3,12 +3,7 @@ import sys
 import time
 import queue
 
-
-def get_exe_dir():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(os.path.abspath(sys.executable))
-    else:
-        return os.path.dirname(os.path.abspath(__file__))
+from _paths import get_base_dir as get_exe_dir  # 兼容历史命名
 
 BASE_DIR = get_exe_dir()
 

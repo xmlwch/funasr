@@ -69,7 +69,9 @@ hiddenimports += [
     
     # 【关键新增】：强制打包我们拆分出来的 worker 模块！
     # 这是解决 PyInstaller 多进程 AttributeError 和 ModuleNotFoundError 的核心
-    'worker'
+    'worker',
+    # 共享路径工具(被 main 和 worker 都 import,带前导下划线可能被 PyInstaller 漏掉,显式列出)
+    '_paths',
 ]
 
 a = Analysis(

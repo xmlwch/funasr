@@ -35,10 +35,7 @@ if sys.platform == 'win32':
     os.environ['FLAGS_use_onednn'] = '0'
 
 # ================= 路径与环境兼容 =================
-def get_base_dir():
-    if getattr(sys, 'frozen', False):
-        return sys._MEIPASS if hasattr(sys, '_MEIPASS') else os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.abspath(__file__))
+from _paths import get_base_dir
 
 BASE_DIR = get_base_dir()
 
@@ -46,6 +43,15 @@ BASE_DIR = get_base_dir()
 def prepend_env(name, value):
     """把 value 拼到环境变量 name 的最前面(用 os.pathsep 分隔)"""
     os.environ[name] = value + os.pathsep + os.environ.get(name, '')
+
+
+# mp.Manager() 每个进程内单例 — 避免 N 个池起 N 个 Manager 服务进程
+_shared_manager = None
+def get_shared_manager():
+    global _shared_manager
+    if _shared_manager is None:
+        _shared_manager = mp.Manager()
+    return _shared_manager
 
 
 # 把打包进二进制的 ffmpeg / ccache 目录加到 PATH 最前
@@ -80,11 +86,20 @@ DOWNLOAD_TIMEOUT = 60
 IDLE_TIMEOUT = 300
 
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from concurrent.futures import ThreadPoolExecutor
 
 
 # 支持的文件后缀
 AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.opus', '.ape', '.ac3'}
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp', '.tif', '.jfif'}
+
+# 路由表:HTTP path 前缀 → 模型类型。__main__ 会按 model_type 找到对应池。
+ROUTES = {
+    '/funasr/identify': 'asr',
+    '/ocr/identify': 'ocr',
+}
+# 池注册表:model_type → ElasticProcessPool。__main__ 启动时填充。
+pools: dict = {}
 
 # 【关键修复】：从独立的 worker 模块导入循环函数，彻底解决 PyInstaller 打包报错
 from worker import elastic_worker_loop 
@@ -97,7 +112,7 @@ class ElasticProcessPool:
         self.idle_timeout = idle_timeout
         self.task_queue = mp.Queue()
         self.result_queue = mp.Queue()
-        self.manager = mp.Manager()
+        self.manager = get_shared_manager()
         self.worker_state = self.manager.dict()
         self.workers = {}
         self.lock = threading.Lock()
@@ -117,6 +132,19 @@ class ElasticProcessPool:
         p.start()
         self.workers[p.pid] = p
         print(f"[{self.model_type.upper()} Pool] 启动新 Worker (PID: {p.pid})，当前 {self.model_type} 池总数: {len(self.workers)}")
+
+    def wait_ready(self, timeout=60):
+        """轮询等待本池有 worker 进入 idle 状态(模型加载完成)"""
+        name = self.model_type.upper()
+        for i in range(timeout):
+            time.sleep(1)
+            if any(s.get('status') == 'idle' for s in self.worker_state.values()):
+                print(f"  ✓ {name} 池就绪")
+                return True
+            if i > 0 and i % 5 == 0:
+                print(f"  {name} 池: 已等待 {i} 秒...")
+        print(f"警告: {name} 池等待超时，模型可能加载失败！")
+        return False
 
     def submit(self, func_name, path):
         if self.is_shutting_down:
@@ -188,24 +216,25 @@ def download_http_file(url: str, suffix: str) -> str:
         if os.path.exists(tmp_path): os.unlink(tmp_path)
         raise
 
-asr_pool = None
-ocr_pool = None
-
 class Handler(BaseHTTPRequestHandler):
     request_queue_size = 128
 
     def do_POST(self):
-        if self.path == '/funasr/identify': self._handle_request('asr', asr_pool)
-        elif self.path == '/ocr/identify': self._handle_request('ocr', ocr_pool)
-        else: self._json(404, {'code': 404, 'message': '未找到路由', 'data': None})
+        model_type = ROUTES.get(self.path)
+        if model_type is None:
+            self._json(404, {'code': 404, 'message': '未找到路由', 'data': None})
+            return
+        target_pool = pools.get(model_type)
+        if target_pool is None:
+            self._json(503, {'code': 503, 'message': f'{model_type.upper()} 池未初始化', 'data': None})
+            return
+        self._handle_request(model_type, target_pool)
 
     def _handle_request(self, service_type, target_pool):
-        # 【新增防御】：如果进程池还没有预热完成（没有 idle 的 worker），直接返回 503
-        if not target_pool.worker_state or all(s.get('status') != 'idle' for s in target_pool.worker_state.values()):
-            # 如果连 worker 都没有，或者都在 initializing/dead，拒绝请求
-            if not any(s.get('status') == 'idle' for s in target_pool.worker_state.values()):
-                self._json(503, {'code': 503, 'message': '服务正在启动/模型加载中，请稍后重试', 'data': None})
-                return
+        # 没有 idle worker 时拒绝(冷启动或全在 busy 之外的 dead/initializing)
+        if not any(s.get('status') == 'idle' for s in target_pool.worker_state.values()):
+            self._json(503, {'code': 503, 'message': '服务正在启动/模型加载中，请稍后重试', 'data': None})
+            return
 
         tmp_path = None
         try:
@@ -267,10 +296,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    if getattr(sys, 'frozen', False):
-        base_dir = os.path.dirname(os.path.abspath(sys.executable))
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = get_base_dir()
     env_file = os.path.join(base_dir, '.env')
 
     def read_env():
@@ -310,34 +336,27 @@ if __name__ == '__main__':
         else: print('错误: %s' % result['message'], file=sys.stderr)
     else:
         # -asr-workers / -ocr-workers 显式指定时优先,否则继承 -workers
-        asr_max = args.asr_workers if args.asr_workers is not None else args.workers
-        ocr_max = args.ocr_workers if args.ocr_workers is not None else args.workers
+        asr_max = args.asr_workers or args.workers
+        ocr_max = args.ocr_workers or args.workers
 
         print('=' * 60)
         print('FunASR & PaddleOCR 弹性伸缩多进程服务 (ASR/OCR 分池)')
         print('=' * 60)
 
-        asr_pool = ElasticProcessPool(model_type='asr', max_workers=asr_max, idle_timeout=args.idle)
-        ocr_pool = ElasticProcessPool(model_type='ocr', max_workers=ocr_max, idle_timeout=args.idle)
+        # 用 pools 字典统一管理:加新模型只需在 ROUTES + 此处加一行
+        pools.update({
+            'asr': ElasticProcessPool(model_type='asr', max_workers=asr_max, idle_timeout=args.idle),
+            'ocr': ElasticProcessPool(model_type='ocr', max_workers=ocr_max, idle_timeout=args.idle),
+        })
 
-        # 两个池各预热 1 个 worker
+        # 各池预热 1 个 worker,然后并行等就绪(总等待 = max(各池) 而非 sum)
         print("正在预热 ASR 与 OCR 模型 (各 1 个)...")
-        asr_pool.start_worker()
-        ocr_pool.start_worker()
-
-        def wait_pool_ready(pool, name, timeout=60):
-            for i in range(timeout):
-                time.sleep(1)
-                if any(s.get('status') == 'idle' for s in pool.worker_state.values()):
-                    print(f"  ✓ {name} 池就绪")
-                    return True
-                if i > 0 and i % 5 == 0:
-                    print(f"  {name} 池: 已等待 {i} 秒...")
-            print(f"警告: {name} 池等待超时，模型可能加载失败！")
-            return False
-
-        wait_pool_ready(asr_pool, "ASR")
-        wait_pool_ready(ocr_pool, "OCR")
+        for pool in pools.values():
+            pool.start_worker()
+        with ThreadPoolExecutor(max_workers=len(pools)) as ex:
+            futures = [ex.submit(pool.wait_ready) for pool in pools.values()]
+            for f in futures:
+                f.result()
         print("✓ 双池预热完成，可以接收请求！")
 
         env_host = '127.0.0.1' if args.host == '0.0.0.0' else args.host
@@ -354,8 +373,10 @@ if __name__ == '__main__':
         signal.signal(signal.SIGINT, graceful_shutdown)
         signal.signal(signal.SIGTERM, graceful_shutdown)
 
+        # 弹性配置横幅:用 pools 字典循环输出,加新池自动出现
+        pool_lines = ' | '.join(f"{p.model_type.upper()} 池 1-{p.max_workers} 个 Worker" for p in pools.values())
         print(f'\n服务已启动: http://{args.host}:{args.port}')
-        print(f'弹性配置: ASR 池 1-{asr_max} 个 Worker | OCR 池 1-{ocr_max} 个 Worker | 空闲 {args.idle}秒 后缩容')
+        print(f'弹性配置: {pool_lines} | 空闲 {args.idle}秒 后缩容')
         print('提示: 支持 Ctrl+C 或 kill 命令优雅退出。按 Ctrl+C 停止服务\n')
 
         try:
@@ -363,7 +384,7 @@ if __name__ == '__main__':
         finally:
             print("[Server] 停止接收新请求，正在清理资源...")
             server.server_close()
-            if asr_pool: asr_pool.shutdown()
-            if ocr_pool: ocr_pool.shutdown()
+            for pool in pools.values():
+                pool.shutdown()
             if os.path.exists(env_file): os.unlink(env_file)
             print("[Server] 服务已完全停止，所有资源已释放。")
