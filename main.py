@@ -178,7 +178,7 @@ class ElasticProcessPool:
         print("[Pool] 正在发送退出信号 (毒丸)...")
         for _ in range(self.max_workers):
             self.task_queue.put(None)
-            
+
         print("[Pool] 等待 Worker 进程退出...")
         with self.lock:
             for pid, p in list(self.workers.items()):
@@ -188,9 +188,10 @@ class ElasticProcessPool:
                     p.terminate()
                     p.join(timeout=2)
             self.workers.clear()
-            
-        try: self.manager.shutdown()
-        except Exception: pass
+
+        # 不在池 shutdown 里关 Manager — Manager 是多池共享的,
+        # 第一个池关掉 Manager 会让其他池的 worker 写 worker_state 失败。
+        # 交给主进程退出时 OS 回收 Manager 子进程。
         print("[Pool] 所有 Worker 已安全退出。")
 
     def _monitor_workers(self):
