@@ -91,7 +91,7 @@ def run_ocr_inference(image_path: str) -> str:
     return "\n".join(texts)
 
 # ================= 弹性 Worker 循环 =================
-def elastic_worker_loop(task_queue, worker_state, pid_placeholder, idle_timeout, model_type):
+def elastic_worker_loop(task_queue, results, worker_state, pid_placeholder, idle_timeout, model_type):
     # 【关键修复 1】：在子进程内部获取真实的 PID，覆盖掉主进程传来的占位符 0
     real_pid = os.getpid()
 
@@ -136,14 +136,14 @@ def elastic_worker_loop(task_queue, worker_state, pid_placeholder, idle_timeout,
                 raise RuntimeError(
                     f"Worker 类型 {model_type!r} 收到不匹配的任务 {task['func']!r}（路由错误）"
                 )
-            # 写到任务自带的 result_q(每个 submit 一条),避免共享 result_queue 抢读
+            # 写到跨进程 results dict(Manager.dict 代理),submit 按 task_id 取自己那条
             res = run_asr_inference(task['path']) if model_type == 'asr' else run_ocr_inference(task['path'])
-            task['result_q'].put(res)
+            results[task['id']] = res
         except KeyboardInterrupt:
             print(f"[Worker {real_pid}] 推理过程中收到 Ctrl+C 信号，中断并退出...")
             worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
             break
         except Exception as e:
-            task['result_q'].put(e)
+            results[task['id']] = e
 
         worker_state[real_pid] = {'status': 'idle', 'last_active': time.time()}

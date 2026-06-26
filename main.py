@@ -112,10 +112,13 @@ class ElasticProcessPool:
         self.max_workers = max_workers
         self.idle_timeout = idle_timeout
         self.task_queue = mp.Queue()
-        # 注意:不再用共享 result_queue — 改为每个 submit 自建 result_q,
-        # 避免多线程 HTTP server 下不同 submit 互相抢读、丢弃对方的结果
+        # Manager.dict 作为跨进程结果通道:worker 写 results[task_id]=res,
+        # submit 轮询自己的 task_id 拿到结果。
+        # 不能用 mp.Queue + task dict 传递:mp.Queue.__getstate__ 限制 Queue
+        # 只能通过 Process(args=...) 直接传,不能通过其他 Queue 间接传(spawn 下)
         self.manager = get_shared_manager()
         self.worker_state = self.manager.dict()
+        self.results = self.manager.dict()
         self.workers = {}
         self.lock = threading.Lock()
         self.is_shutting_down = False
@@ -129,9 +132,9 @@ class ElasticProcessPool:
         if len(self.workers) >= self.max_workers: return
 
         # 顺便把 os.getpid() 改成 0，因为 worker.py 里已经用 real_pid 覆盖了
-        # 不再传 result_queue,worker 通过 task['result_q'] 拿专属回写通道
+        # results 是 Manager.dict 代理,worker 通过它写结果
         p = mp.Process(target=elastic_worker_loop,
-                       args=(self.task_queue, self.worker_state, 0, self.idle_timeout, self.model_type))
+                       args=(self.task_queue, self.results, self.worker_state, 0, self.idle_timeout, self.model_type))
         p.start()
         self.workers[p.pid] = p
         print(f"[{self.model_type.upper()} Pool] 启动新 Worker (PID: {p.pid})，当前 {self.model_type} 池总数: {len(self.workers)}")
@@ -154,10 +157,8 @@ class ElasticProcessPool:
             raise RuntimeError("服务正在关闭，拒绝新请求")
 
         task_id = uuid.uuid4().hex
-        # 每个 submit 自建 result_q,worker 处理完后写到这条专属队列
-        # 这样多线程 HTTP server 下不同 submit 不会抢结果
-        result_q = mp.Queue()
-        self.task_queue.put({'id': task_id, 'func': func_name, 'path': path, 'result_q': result_q})
+        # task dict 只放可序列化的简单数据(无 Queue/Pipe/Lock 等)
+        self.task_queue.put({'id': task_id, 'func': func_name, 'path': path})
 
         with self.lock:
             alive_pids = [pid for pid in self.workers if self.workers[pid].is_alive()]
@@ -165,17 +166,18 @@ class ElasticProcessPool:
             if len(busy_pids) == len(alive_pids) and len(alive_pids) < self.max_workers:
                 self.start_worker()
 
+        # 轮询 self.results 等 worker 写入,task_id 唯一所以不会拿错
         start_time = time.time()
         while True:
             if self.is_shutting_down:
                 raise RuntimeError("服务正在关闭，推理被中断")
-            try:
-                res_data = result_q.get(timeout=1.0)
-                if isinstance(res_data, Exception): raise res_data
-                return res_data
-            except queue.Empty:
-                if time.time() - start_time > INFERENCE_TIMEOUT:
-                    raise TimeoutError("推理超时")
+            if task_id in self.results:
+                data = self.results.pop(task_id)
+                if isinstance(data, Exception): raise data
+                return data
+            if time.time() - start_time > INFERENCE_TIMEOUT:
+                raise TimeoutError("推理超时")
+            time.sleep(0.05)  # 50ms 轮询,既不浪费 CPU 也不让用户等太久
 
     def shutdown(self):
         self.is_shutting_down = True
