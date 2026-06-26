@@ -42,14 +42,19 @@ def get_base_dir():
 
 BASE_DIR = get_base_dir()
 
-# 【新增】:把打包进二进制的 ffmpeg / ccache 目录加到 PATH 最前
+
+def prepend_env(name, value):
+    """把 value 拼到环境变量 name 的最前面(用 os.pathsep 分隔)"""
+    os.environ[name] = value + os.pathsep + os.environ.get(name, '')
+
+
+# 把打包进二进制的 ffmpeg / ccache 目录加到 PATH 最前
 # 这样 torchaudio 探测 ffmpeg、PaddlePaddle 调用 which ccache 都能命中,不再打印告警
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    _bundled_bin = os.path.join(sys._MEIPASS, 'bin')
+# 注意:ccache 是静态二进制,无 .so,不需要进 LD_LIBRARY_PATH(否则未来同名 .so 会被误加载)
+if getattr(sys, 'frozen', False):
+    _bundled_bin = os.path.join(BASE_DIR, 'bin')
     if os.path.isdir(_bundled_bin):
-        os.environ['PATH'] = _bundled_bin + os.pathsep + os.environ.get('PATH', '')
-        # 同步更新 LD_LIBRARY_PATH,避免某些二进制运行时找不到 lib
-        os.environ['LD_LIBRARY_PATH'] = _bundled_bin + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')
+        prepend_env('PATH', _bundled_bin)
 
 if sys.platform == 'win32':
     for path in [os.path.join(BASE_DIR, 'torch', 'lib'), os.path.join(BASE_DIR, 'Library', 'bin')]:
@@ -66,7 +71,7 @@ if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
     for _sub in ['paddle/libs', 'paddle/base']:
         _pp = _base / _sub
         if _pp.exists():
-            os.environ['LD_LIBRARY_PATH'] = f'{_pp}:{os.environ.get("LD_LIBRARY_PATH","")}'
+            prepend_env('LD_LIBRARY_PATH', str(_pp))
 
 # ================= 生产环境配置 =================
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024

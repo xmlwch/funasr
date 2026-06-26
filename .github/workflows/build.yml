@@ -43,7 +43,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install paddlepaddle==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+          pip install paddlepaddle -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
           pip install -r requirements.txt pyinstaller
 
       - name: Build with PyInstaller
@@ -100,11 +100,11 @@ jobs:
             下载地址：https://www.modelscope.cn/models/iic/SenseVoiceSmall-onnx
 
             ```bash
-            # INT8 量化版（推荐）
-            wget "https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo?Revision=master&FilePath=model_quant.onnx"
-            # 配套文件
-            for f in tokens.json config.yaml am.mvn configuration.json chn_jpn_yue_eng_ko_spectok.bpe.model; do
-              wget "https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo?Revision=master&FilePath=${f}"
+            # 统一 BASE，所有文件都走它
+            BASE="https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo?Revision=master&FilePath="
+
+            for f in model_quant.onnx tokens.json config.yaml am.mvn configuration.json chn_jpn_yue_eng_ko_spectok.bpe.model; do
+              wget "${BASE}${f}"
             done
             ```
 

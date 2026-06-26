@@ -28,11 +28,8 @@ mkdir -p model && cd model
 
 BASE="https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo?Revision=master&FilePath="
 
-# INT8 量化版(funasr-onnx 默认加载的就是这个,CPU 推荐)
-wget "${BASE}model_quant.onnx"
-
-# 配套文件
-for f in tokens.json config.yaml am.mvn configuration.json chn_jpn_yue_eng_ko_spectok.bpe.model; do
+# INT8 量化版(funasr-onnx 默认加载的就是这个,CPU 推荐)+ 配套文件
+for f in model_quant.onnx tokens.json config.yaml am.mvn configuration.json chn_jpn_yue_eng_ko_spectok.bpe.model; do
     wget "${BASE}${f}"
 done
 
