@@ -112,6 +112,9 @@ def elastic_worker_loop(task_queue, result_queue, worker_state, pid_placeholder,
             if state and (time.time() - state['last_active'] > idle_timeout):
                 alive_count = sum(1 for s in worker_state.values() if s.get('status') != 'dead')
                 if alive_count > 1:
+                    # 【注意】"至少保留 1 个 alive"是 best-effort:两个 worker 几乎同时
+                    # 走到这里时都可能看到 alive_count>1 而双双退出。系统会自愈
+                    # (下一个 submit 看到 alive_pids 为空,触发 start_worker)。
                     print(f"[Worker {real_pid}] 空闲超时，主动退出以释放资源。")
                     worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
                     break
