@@ -13,6 +13,15 @@ RUN mkdir -p /build/bin && \
     chmod +x /build/bin/* 2>/dev/null || true && \
     ls -la /build/bin/
 
+# torchaudio 2.x 不再调用 ffmpeg 命令行,而是 dlopen libav*.so/libsw*.so/libpostproc.so
+# 这些动态库 — 复制到 /build/lib/ 让 PyInstaller 打包,运行时 main/worker 注入 LD_LIBRARY_PATH
+RUN mkdir -p /build/lib && \
+    cp -L /usr/lib/x86_64-linux-gnu/libav*.so* /build/lib/ 2>/dev/null || true && \
+    cp -L /usr/lib/x86_64-linux-gnu/libsw*.so* /build/lib/ 2>/dev/null || true && \
+    cp -L /usr/lib/x86_64-linux-gnu/libpostproc.so* /build/lib/ 2>/dev/null || true && \
+    chmod +x /build/lib/* 2>/dev/null || true && \
+    ls -la /build/lib/ | head -20
+
 COPY main.py .
 COPY worker.py .
 COPY _paths.py .

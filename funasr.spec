@@ -60,6 +60,17 @@ if os.path.isdir(local_bin):
 else:
     print(f"Warning: local bin/ not found at {local_bin} (ffmpeg/ccache will not be bundled)")
 
+# 【新增】:把 ffmpeg 动态库(libav*.so/libsw*.so/libpostproc.so)打进二进制
+# torchaudio 2.x 通过 dlopen 检测这些库,运行时由 main/worker 把 _MEIPASS/lib 加到 LD_LIBRARY_PATH
+local_lib = os.path.join(SPEC_DIR, 'lib')
+if os.path.isdir(local_lib):
+    for _entry in os.scandir(local_lib):
+        if _entry.is_file():
+            binaries.append((_entry.path, 'lib'))
+            print(f"Added runtime library: {_entry.path} -> lib/{_entry.name}")
+else:
+    print(f"Warning: local lib/ not found at {local_lib} (ffmpeg .so files will not be bundled)")
+
 # 补充一些常见的隐藏导入，防止运行时 ModuleNotFoundError
 hiddenimports += [
     'librosa', 'soundfile', 'numpy', 'cv2', 'Cython',

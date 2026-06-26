@@ -27,24 +27,31 @@ def get_exe_dir():
 
 
 def setup_bundled_env():
-    """frozen 时把 _MEIPASS/bin 注入 PATH,并设 TORCHAUDIO_USE_FFMPEG_PATH
-    等环境变量,让 torchaudio / pydub / ffmpeg-python 等库能找到 ffmpeg。
+    """frozen 时把 _MEIPASS/bin 注入 PATH,把 _MEIPASS/lib 注入 LD_LIBRARY_PATH,
+    并设 TORCHAUDIO_USE_FFMPEG_PATH 等环境变量,让 torchaudio 2.x / pydub
+    / ffmpeg-python 等库能找到 ffmpeg(bin)和 libav*.so(lib)。
 
     main.py 和 worker.py 都需要调用 — worker 是独立 Python 进程,
     不会执行 main.py 的模块级代码,必须自己设。
     """
     if not getattr(sys, 'frozen', False):
         return
-    bin_dir = os.path.join(get_pkg_dir(), 'bin')
-    if not os.path.isdir(bin_dir):
-        return
-    # 1) PATH 前置 — 给 subprocess / shutil.which 用
-    os.environ['PATH'] = bin_dir + os.pathsep + os.environ.get('PATH', '')
-    # 2) 直接告诉 torchaudio 等库 ffmpeg 在哪(绕开 PATH/shutil.which)
+    pkg = get_pkg_dir()
+    bin_dir = os.path.join(pkg, 'bin')
+    lib_dir = os.path.join(pkg, 'lib')
+
+    # 1) PATH 前置 — 给 subprocess / shutil.which 找 ffmpeg 可执行文件
+    if os.path.isdir(bin_dir):
+        os.environ['PATH'] = bin_dir + os.pathsep + os.environ.get('PATH', '')
+    # 2) LD_LIBRARY_PATH 前置 — torchaudio 2.x 通过 dlopen 找 libav*.so/libsw*.so
+    if os.path.isdir(lib_dir):
+        os.environ['LD_LIBRARY_PATH'] = lib_dir + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')
+    # 3) 直接告诉 torchaudio 等库 ffmpeg 在哪(对老版本 torchaudio < 2.x 仍有效)
     for env_name, fname in (
-        ('TORCHAUDIO_USE_FFMPEG_PATH', 'ffmpeg'),  # torchaudio 0.10+
+        ('TORCHAUDIO_USE_FFMPEG_PATH', 'ffmpeg'),  # torchaudio 0.10~1.x
         ('FFMPEG_BINARY', 'ffmpeg'),                # pydub / ffmpeg-python
     ):
-        ffmpeg_path = os.path.join(bin_dir, fname)
-        if os.path.isfile(ffmpeg_path):
-            os.environ[env_name] = ffmpeg_path
+        if os.path.isdir(bin_dir):
+            ffmpeg_path = os.path.join(bin_dir, fname)
+            if os.path.isfile(ffmpeg_path):
+                os.environ[env_name] = ffmpeg_path
