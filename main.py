@@ -18,6 +18,15 @@ import signal
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+# 【生产改造】Windows 默认 GBK 控制台无法编码 ✓(U+2713)等 Unicode
+# worker 子进程继承环境变量,这里必须提前设,否则 print ✓ 直接抛异常
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 # 【PyInstaller 关键】：多进程支持必须放在最前面
 mp.freeze_support()
 try:
@@ -103,10 +112,14 @@ from worker import elastic_worker_loop
 
 # ================= 弹性进程池管理器 =================
 class ElasticProcessPool:
-    def __init__(self, model_type, max_workers, idle_timeout):
+    def __init__(self, model_type, max_workers, idle_timeout, max_queue=200, min_workers=1):
         self.model_type = model_type
         self.max_workers = max_workers
         self.idle_timeout = idle_timeout
+        self.max_queue = max_queue  # 任务队列上限,防 OOM
+        # 【生产改造】最小保活 worker 数,空闲超时后保留多少个不再缩容
+        # 生产推荐设 = -prewarm,避免突发流量后冷启动
+        self.min_workers = min_workers
         self.task_queue = mp.Queue()
         # Manager.dict 作为跨进程结果通道:worker 写 results[task_id]=res,
         # submit 轮询自己的 task_id 拿到结果。
@@ -118,6 +131,11 @@ class ElasticProcessPool:
         self.workers = {}
         self.lock = threading.Lock()
         self.is_shutting_down = False
+        # 【生产改造】in_flight:当前在飞任务数(已派发未拿结果)
+        # 比 busy 状态更准——worker 标 busy 有 ms 级延迟,in_flight 立即可见
+        # 用它做主动扩容:in_flight >= alive 时立刻 spawn 新 worker
+        self.in_flight = 0
+        self.scale_events = 0  # 扩容次数,metrics 观测用
 
         self.monitor_thread = threading.Thread(target=self._monitor_workers, daemon=True)
         self.monitor_thread.start()
@@ -130,7 +148,7 @@ class ElasticProcessPool:
         # 顺便把 os.getpid() 改成 0，因为 worker.py 里已经用 real_pid 覆盖了
         # results 是 Manager.dict 代理,worker 通过它写结果
         p = mp.Process(target=elastic_worker_loop,
-                       args=(self.task_queue, self.results, self.worker_state, 0, self.idle_timeout, self.model_type))
+                       args=(self.task_queue, self.results, self.worker_state, 0, self.idle_timeout, self.model_type, self.min_workers))
         p.start()
         self.workers[p.pid] = p
         print(f"[{self.model_type.upper()} Pool] 启动新 Worker (PID: {p.pid})，当前 {self.model_type} 池总数: {len(self.workers)}")
@@ -153,27 +171,68 @@ class ElasticProcessPool:
             raise RuntimeError("服务正在关闭，拒绝新请求")
 
         task_id = uuid.uuid4().hex
-        # task dict 只放可序列化的简单数据(无 Queue/Pipe/Lock 等)
-        self.task_queue.put({'id': task_id, 'func': func_name, 'path': path})
 
+        try:
+            with self.lock:
+                # 【生产改造】先占 in_flight 再判断扩容——
+                # 这样并发提交时每个请求都立刻看到自己在飞,
+                # 触发扩容不等 worker 异步标 busy
+                self.in_flight += 1
+                alive = sum(1 for p in self.workers.values() if p.is_alive())
+                # 队列过载保护:in_flight 上限 = alive + max_queue
+                # 满了直接拒,不等超时
+                if self.in_flight > alive + self.max_queue:
+                    # 【BUG 修复】不再这里 -=1 — finally 会统一递减
+                    # 之前双递减会导致实际限速比 alive+max_queue 少 1
+                    raise RuntimeError(f"队列已满({alive} worker / {self.max_queue} 排队上限)")
+                # 主动扩容:in_flight 接近 alive 时立即 spawn 新 worker
+                # 不再依赖 busy==alive(那个判断有 ms 级延迟,会漏触发)
+                if alive < self.max_workers and self.in_flight >= alive:
+                    self.start_worker()
+                    self.scale_events += 1
+                # task dict 只放可序列化的简单数据(无 Queue/Pipe/Lock 等)
+                self.task_queue.put({'id': task_id, 'func': func_name, 'path': path})
+
+            # 轮询 self.results 等 worker 写入,task_id 唯一所以不会拿错
+            start_time = time.time()
+            while True:
+                if self.is_shutting_down:
+                    raise RuntimeError("服务正在关闭，推理被中断")
+                if task_id in self.results:
+                    data = self.results.pop(task_id)
+                    if isinstance(data, Exception): raise data
+                    return data
+                if time.time() - start_time > INFERENCE_TIMEOUT:
+                    raise TimeoutError("推理超时")
+                time.sleep(0.05)  # 50ms 轮询,既不浪费 CPU 也不让用户等太久
+        finally:
+            # 【BUG 修复】无论成功 / 队列满 / 超时 / 关闭,都只递减一次
+            with self.lock:
+                self.in_flight -= 1
+
+    def stats(self):
+        """池状态快照 — 用于 /metrics 端点和日志。线程安全。"""
         with self.lock:
-            alive_pids = [pid for pid in self.workers if self.workers[pid].is_alive()]
-            busy_pids = [pid for pid in alive_pids if self.worker_state.get(pid, {}).get('status') == 'busy']
-            if len(busy_pids) == len(alive_pids) and len(alive_pids) < self.max_workers:
-                self.start_worker()
-
-        # 轮询 self.results 等 worker 写入,task_id 唯一所以不会拿错
-        start_time = time.time()
-        while True:
-            if self.is_shutting_down:
-                raise RuntimeError("服务正在关闭，推理被中断")
-            if task_id in self.results:
-                data = self.results.pop(task_id)
-                if isinstance(data, Exception): raise data
-                return data
-            if time.time() - start_time > INFERENCE_TIMEOUT:
-                raise TimeoutError("推理超时")
-            time.sleep(0.05)  # 50ms 轮询,既不浪费 CPU 也不让用户等太久
+            # 【BUG 修复】用 items() 一次拿到 (pid, state) 快照,避免两次远程调用之间被改
+            state_snapshot = dict(self.worker_state.items())
+            states = list(state_snapshot.values())
+            alive = sum(1 for p in self.workers.values() if p.is_alive())
+            alive_pids = {p.pid for p in self.workers.values() if p.is_alive()}
+            # loading:已 spawn 但 worker_state 还没写入(模型加载中)
+            loaded_pids = {pid for pid in state_snapshot.keys() if pid in alive_pids}
+            loading = alive - len(loaded_pids)
+            return {
+                'model_type': self.model_type,
+                'alive': alive,
+                'max': self.max_workers,
+                'min': self.min_workers,
+                'in_flight': self.in_flight,
+                'idle': sum(1 for s in states if s.get('status') == 'idle'),
+                'busy': sum(1 for s in states if s.get('status') == 'busy'),
+                'loading': loading,
+                'dead': sum(1 for s in states if s.get('status') == 'dead'),
+                'scale_events': self.scale_events,
+            }
 
     def shutdown(self):
         self.is_shutting_down = True
@@ -270,9 +329,11 @@ class Handler(BaseHTTPRequestHandler):
         self._handle_request(model_type, target_pool)
 
     def _handle_request(self, service_type, target_pool):
-        # 没有 idle worker 时拒绝(冷启动或全在 busy 之外的 dead/initializing)
-        if not any(s.get('status') == 'idle' for s in target_pool.worker_state.values()):
-            self._json(503, {'code': 503, 'message': '服务正在启动/模型加载中，请稍后重试', 'data': None})
+        # 【生产改造】拒绝条件收窄:只在"完全无可用 worker"时才拒
+        # busy 不再是拒绝理由 — busy 时请求进 submit() 排队 + 触发主动扩容
+        s = target_pool.stats()
+        if s['alive'] == 0 or s['alive'] == s['dead']:
+            self._json(503, {'code': 503, 'message': '服务正在启动/无可用 worker，请稍后重试', 'data': None})
             return
 
         tmp_path = None
@@ -320,8 +381,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ['/funasr/health', '/ocr/health']:
             self._json(200, {'code': 200, 'status': 'ok'})
+        elif self.path == '/metrics':
+            # Prometheus 文本格式 — 每池一行,带 model 标签
+            lines = []
+            for pool in pools.values():
+                s = pool.stats()
+                model = s['model_type']
+                for key in ('alive', 'max', 'min', 'in_flight', 'idle', 'busy', 'loading', 'dead', 'scale_events'):
+                    lines.append(f'funasr_pool_{key}{{model="{model}"}} {s[key]}')
+            body = ('\n'.join(lines) + '\n').encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(body)
         else:
-            self._json(405, {'code': 405, 'message': '仅支持 POST', 'data': None})
+            self._json(405, {'code': 405, 'message': '仅支持 POST 或 /metrics /health', 'data': None})
 
     def _json(self, status, data):
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
@@ -353,9 +427,18 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-host', default=env_host or '127.0.0.1')
     parser.add_argument('-port', type=int, default=env_port or 5001)
-    parser.add_argument('-workers', type=int, default=16, help='ASR 与 OCR 池各自的最大 worker 数（默认 16）')
+    parser.add_argument('-workers', type=int, default=16, help='ASR 与 OCR 池各自的最大 worker 数(默认 16);支持 -workers 20 提升到 20 并发')
     parser.add_argument('-asr-workers', type=int, default=None, help='ASR 池最大 worker 数；指定后覆盖 -workers')
     parser.add_argument('-ocr-workers', type=int, default=None, help='OCR 池最大 worker 数；指定后覆盖 -workers')
+    parser.add_argument('-prewarm', type=int, default=4, help='每池启动时预热的 worker 数(默认 4);设为 20 可全量预热但启动慢且内存高')
+    parser.add_argument('-asr-prewarm', type=int, default=None, help='ASR 池预热数;指定后覆盖 -prewarm')
+    parser.add_argument('-ocr-prewarm', type=int, default=None, help='OCR 池预热数;指定后覆盖 -prewarm')
+    parser.add_argument('-min-workers', type=int, default=1, help='空闲超时后最少保留多少 worker(默认 1);生产推荐设为 -prewarm 同值,避免突发流量冷启动')
+    parser.add_argument('-asr-min-workers', type=int, default=None, help='ASR 池保活数;指定后覆盖 -min-workers')
+    parser.add_argument('-ocr-min-workers', type=int, default=None, help='OCR 池保活数;指定后覆盖 -min-workers')
+    parser.add_argument('-max-queue', type=int, default=200, help='单池最大排队任务数(in_flight - alive 的上限),超过直接 503 防 OOM')
+    parser.add_argument('-asr-max-queue', type=int, default=None, help='ASR 池队列上限;指定后覆盖 -max-queue')
+    parser.add_argument('-ocr-max-queue', type=int, default=None, help='OCR 池队列上限;指定后覆盖 -max-queue')
     parser.add_argument('-idle', type=int, default=IDLE_TIMEOUT)
     parser.add_argument('-f', type=str, default=None)
     args = parser.parse_args()
@@ -375,18 +458,46 @@ if __name__ == '__main__':
         if result['code'] == 200: print(result['data'])
         else: print('错误: %s' % result['message'], file=sys.stderr)
     else:
-        # -asr-workers / -ocr-workers 显式指定时优先,否则继承 -workers
-        asr_max = args.asr_workers or args.workers
-        ocr_max = args.ocr_workers or args.workers
-
         print('=' * 60)
         print('FunASR & PaddleOCR 弹性伸缩多进程服务 (ASR/OCR 分池)')
         print('=' * 60)
 
+        # 【生产改造】per-pool 参数解析:优先 asr/ocr 独立值,缺省用全局值
+        # 例: -prewarm 4 -asr-prewarm 8 → ASR 池预热 8,OCR 池预热 4
+        pool_cfg = {
+            'asr': {
+                'max_workers': args.asr_workers or args.workers,
+                'prewarm':     args.asr_prewarm if args.asr_prewarm is not None else args.prewarm,
+                'min_workers': args.asr_min_workers if args.asr_min_workers is not None else args.min_workers,
+                'max_queue':   args.asr_max_queue if args.asr_max_queue is not None else args.max_queue,
+            },
+            'ocr': {
+                'max_workers': args.ocr_workers or args.workers,
+                'prewarm':     args.ocr_prewarm if args.ocr_prewarm is not None else args.prewarm,
+                'min_workers': args.ocr_min_workers if args.ocr_min_workers is not None else args.min_workers,
+                'max_queue':   args.ocr_max_queue if args.ocr_max_queue is not None else args.max_queue,
+            },
+        }
+
+        # 【校验】min_workers 不能大于 max_workers,否则池永远不会缩容(逻辑死循环)
+        for name, cfg in pool_cfg.items():
+            if cfg['min_workers'] > cfg['max_workers']:
+                print(f"❌ {name.upper()} 池 min_workers({cfg['min_workers']}) > max_workers({cfg['max_workers']}),无解配置,退出",
+                      file=sys.stderr)
+                sys.exit(1)
+            if cfg['prewarm'] > cfg['max_workers']:
+                print(f"⚠️  {name.upper()} 池 prewarm({cfg['prewarm']}) > max_workers({cfg['max_workers']}),实际只预热 {cfg['max_workers']} 个")
+
         # 用 pools 字典统一管理:加新模型只需在 ROUTES + 此处加一行
         pools.update({
-            'asr': ElasticProcessPool(model_type='asr', max_workers=asr_max, idle_timeout=args.idle),
-            'ocr': ElasticProcessPool(model_type='ocr', max_workers=ocr_max, idle_timeout=args.idle),
+            name: ElasticProcessPool(
+                model_type=name,
+                max_workers=cfg['max_workers'],
+                idle_timeout=args.idle,
+                max_queue=cfg['max_queue'],
+                min_workers=cfg['min_workers'],
+            )
+            for name, cfg in pool_cfg.items()
         })
 
         # 启动前 fail-fast:校验所有池的模型文件,缺则直接退出,避免 worker 反复
@@ -397,10 +508,20 @@ if __name__ == '__main__':
             print(f"\n❌ {e}\n", file=sys.stderr)
             sys.exit(1)
 
-        # 各池预热 1 个 worker,然后并行等就绪(总等待 = max(各池) 而非 sum)
-        print("正在预热 ASR 与 OCR 模型 (各 1 个)...")
-        for pool in pools.values():
-            pool.start_worker()
+        # 【生产改造】按 per-pool prewarm 数预热(支持 ASR/OCR 各自不同)
+        # 每个 worker 进程加载 SenseVoiceSmall + PaddleOCR ≈ 1GB 内存
+        total_prewarm = sum(cfg['prewarm'] for cfg in pool_cfg.values())
+        est_mem_gb = total_prewarm * 1.0
+        prewarm_detail = ' | '.join(
+            f"{n.upper()} {cfg['prewarm']} 个" for n, cfg in pool_cfg.items()
+        )
+        print(f"正在预热模型({prewarm_detail},合计 {total_prewarm} 个进程,约 {est_mem_gb:.0f}GB 内存)...")
+        if total_prewarm > 8:
+            print(f"⚠️  预热 {total_prewarm} 个 worker,启动时间 ≈ {total_prewarm * 10}s,需 {est_mem_gb:.0f}GB 内存")
+        for name, cfg in pool_cfg.items():
+            pool = pools[name]
+            for _ in range(cfg['prewarm']):
+                pool.start_worker()
         with ThreadPoolExecutor(max_workers=len(pools)) as ex:
             futures = [ex.submit(pool.wait_ready) for pool in pools.values()]
             for f in futures:
@@ -422,9 +543,12 @@ if __name__ == '__main__':
         signal.signal(signal.SIGTERM, graceful_shutdown)
 
         # 弹性配置横幅:用 pools 字典循环输出,加新池自动出现
-        pool_lines = ' | '.join(f"{p.model_type.upper()} 池 1-{p.max_workers} 个 Worker" for p in pools.values())
+        pool_lines = ' | '.join(
+            f"{p.model_type.upper()} 池 {p.min_workers}-{p.max_workers} 个 Worker(队列上限 {p.max_queue})"
+            for p in pools.values()
+        )
         print(f'\n服务已启动: http://{args.host}:{args.port}')
-        print(f'弹性配置: {pool_lines} | 空闲 {args.idle}秒 后缩容')
+        print(f'弹性配置: {pool_lines} | 空闲 {args.idle}秒 后缩到最小保活')
         print('提示: 支持 Ctrl+C 或 kill 命令优雅退出。按 Ctrl+C 停止服务\n')
 
         try:

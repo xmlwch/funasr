@@ -94,7 +94,7 @@ def run_ocr_inference(image_path: str) -> str:
     return "\n".join(texts)
 
 # ================= 弹性 Worker 循环 =================
-def elastic_worker_loop(task_queue, results, worker_state, pid_placeholder, idle_timeout, model_type):
+def elastic_worker_loop(task_queue, results, worker_state, pid_placeholder, idle_timeout, model_type, min_workers=1):
     # 【关键修复 1】：在子进程内部获取真实的 PID，覆盖掉主进程传来的占位符 0
     real_pid = os.getpid()
 
@@ -114,7 +114,9 @@ def elastic_worker_loop(task_queue, results, worker_state, pid_placeholder, idle
             state = worker_state.get(real_pid)
             if state and (time.time() - state['last_active'] > idle_timeout):
                 alive_count = sum(1 for s in worker_state.values() if s.get('status') != 'dead')
-                if alive_count > 1:
+                # 【生产改造】至少保留 min_workers 个 alive(主进程通过 args 传入)
+                # 旧逻辑硬编码 > 1 会让池子空闲后缩到 1,生产突发流量要冷启动
+                if alive_count > min_workers:
                     # 【注意】"至少保留 1 个 alive"是 best-effort:两个 worker 几乎同时
                     # 走到这里时都可能看到 alive_count>1 而双双退出。系统会自愈
                     # (下一个 submit 看到 alive_pids 为空,触发 start_worker)。
