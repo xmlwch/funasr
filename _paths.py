@@ -40,9 +40,15 @@ def setup_bundled_env():
     bin_dir = os.path.join(pkg, 'bin')
     lib_dir = os.path.join(pkg, 'lib')
 
-    # 1) PATH 前置 — 给 subprocess / shutil.which 找 ffmpeg 可执行文件
+    # 1) PATH 前置 — 给 subprocess / shutil.which 找 ffmpeg / ffprobe / ccache 等可执行文件
     if os.path.isdir(bin_dir):
         os.environ['PATH'] = bin_dir + os.pathsep + os.environ.get('PATH', '')
+        # 显式 sanity check:启动时打印哪些 tool 真的在 bin/ 里,方便排查
+        for _tool in ('ffmpeg', 'ffprobe', 'ccache'):
+            if os.path.isfile(os.path.join(bin_dir, _tool)):
+                print(f"[bundled] {_tool} -> {os.path.join(bin_dir, _tool)}")
+            else:
+                print(f"[bundled] WARNING: {_tool} missing in {bin_dir}")
     # 2) LD_LIBRARY_PATH 前置 — torchaudio 2.x 通过 dlopen 找 libav*.so/libsw*.so
     if os.path.isdir(lib_dir):
         os.environ['LD_LIBRARY_PATH'] = lib_dir + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')
