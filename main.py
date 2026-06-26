@@ -206,6 +206,9 @@ class ElasticProcessPool:
                 for pid in dead_pids:
                     self.workers.pop(pid, None)
                     self.worker_state.pop(pid, None)
+                # 【已知限制】如果 model 文件丢失,worker init 会反复失败,
+                # 每次 submit 等 300s 超时后触发 start_worker 又失败。
+                # 改进:连续 N 次 init 失败应停止重启并告警。本次未实现。
 
 # ================= 辅助函数与 HTTP 服务器 =================
 def download_http_file(url: str, suffix: str) -> str:
