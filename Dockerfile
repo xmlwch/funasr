@@ -4,7 +4,7 @@ WORKDIR /build
 
 RUN sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
     sed -i '/buster-updates/d' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y --no-install-recommends binutils libgomp1 libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 && rm -rf /var/lib/apt/lists/*
+    apt-get update && apt-get install -y --no-install-recommends binutils libgomp1 libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 ffmpeg && rm -rf /var/lib/apt/lists/*
 
 COPY main.py .
 COPY worker.py .
