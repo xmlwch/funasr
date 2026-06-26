@@ -6,7 +6,6 @@
   - get_exe_dir(): worker / main 的 .env 用,返回 sys.executable 所在目录
     用途:用户放在 exe 旁边的 model/、.env 等运行时配置
   - setup_bundled_env(): main 和 worker 各自调用,把 _MEIPASS/bin 注入 PATH
-    并设 TORCHAUDIO_USE_FFMPEG_PATH(直接告诉 torchaudio,绕开 PATH 检测)
 """
 import os
 import sys
@@ -40,10 +39,7 @@ def setup_bundled_env():
     bin_dir = os.path.join(pkg, 'bin')
     lib_dir = os.path.join(pkg, 'lib')
 
-    # 1) PATH 前置 — 给 subprocess / shutil.which 找 ffmpeg / ffprobe / ccache 等可执行文件
+    # 1) PATH 前置 — 给 subprocess / shutil.which 找 ccache 等可执行文件
     if os.path.isdir(bin_dir):
         os.environ['PATH'] = bin_dir + os.pathsep + os.environ.get('PATH', '')
 
-    # 2) LD_LIBRARY_PATH 前置 — torchaudio 2.x 通过 dlopen 找 libav*.so/libsw*.so
-    if os.path.isdir(lib_dir):
-        os.environ['LD_LIBRARY_PATH'] = lib_dir + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')

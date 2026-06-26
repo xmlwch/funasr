@@ -49,8 +49,8 @@ if not any('Cython' in str(d[0]) and 'Utility' in str(d[0]) for d in datas):
     except ImportError:
         print("Warning: Cython not installed, skipping Cython/Utility collection (paddle may warn at runtime)")
 
-# 【新增】:把 ffmpeg / ccache 打进二进制,运行时由 main.py 把 _MEIPASS/bin 加到 PATH
-# 这样无论目标机器装没装 ffmpeg/ccache,torchaudio 与 PaddlePaddle 都不会再打告警
+# 把 ccache 打进二进制,运行时由 main.py 把 _MEIPASS/bin 加到 PATH,
+# PaddlePaddle 调 which('ccache') 能命中,不再打印告警。
 local_bin = os.path.join(SPEC_DIR, 'bin')
 if os.path.isdir(local_bin):
     for _entry in os.scandir(local_bin):
@@ -58,18 +58,7 @@ if os.path.isdir(local_bin):
             binaries.append((_entry.path, 'bin'))
             print(f"Added runtime binary: {_entry.path} -> bin/{_entry.name}")
 else:
-    print(f"Warning: local bin/ not found at {local_bin} (ffmpeg/ccache will not be bundled)")
-
-# 【新增】:把 ffmpeg 动态库(libav*.so/libsw*.so/libpostproc.so)打进二进制
-# torchaudio 2.x 通过 dlopen 检测这些库,运行时由 main/worker 把 _MEIPASS/lib 加到 LD_LIBRARY_PATH
-local_lib = os.path.join(SPEC_DIR, 'lib')
-if os.path.isdir(local_lib):
-    for _entry in os.scandir(local_lib):
-        if _entry.is_file():
-            binaries.append((_entry.path, 'lib'))
-            print(f"Added runtime library: {_entry.path} -> lib/{_entry.name}")
-else:
-    print(f"Warning: local lib/ not found at {local_lib} (ffmpeg .so files will not be bundled)")
+    print(f"Warning: local bin/ not found at {local_bin} (ccache will not be bundled)")
 
 # 补充一些常见的隐藏导入，防止运行时 ModuleNotFoundError
 hiddenimports += [
@@ -80,9 +69,7 @@ hiddenimports += [
     
     # 【关键新增】：强制打包我们拆分出来的 worker 模块！
     # 这是解决 PyInstaller 多进程 AttributeError 和 ModuleNotFoundError 的核心
-    'worker',
-    # 共享路径工具(被 main 和 worker 都 import,带前导下划线可能被 PyInstaller 漏掉,显式列出)
-    '_paths',
+    'worker'
 ]
 
 a = Analysis(
