@@ -15,6 +15,7 @@ RUN mkdir -p /build/bin && \
 
 COPY main.py .
 COPY worker.py .
+COPY _paths.py .
 COPY requirements.txt .
 COPY funasr.spec .
 
