@@ -3,7 +3,8 @@ import sys
 import time
 import queue
 
-from _paths import get_base_dir as get_exe_dir  # 兼容历史命名
+# worker 用 get_exe_dir:模型文件是用户放在 exe 旁边的,不在 _MEIPASS
+from _paths import get_exe_dir
 
 BASE_DIR = get_exe_dir()
 

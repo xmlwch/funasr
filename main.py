@@ -35,9 +35,10 @@ if sys.platform == 'win32':
     os.environ['FLAGS_use_onednn'] = '0'
 
 # ================= 路径与环境兼容 =================
-from _paths import get_base_dir
+from _paths import get_pkg_dir, get_exe_dir
 
-BASE_DIR = get_base_dir()
+# BASE_DIR 是打包资源目录(_MEIPASS),用于 paddle/libs、bundled bin 等
+BASE_DIR = get_pkg_dir()
 
 
 def prepend_env(name, value):
@@ -296,7 +297,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    base_dir = get_base_dir()
+    # .env 放在 exe 旁边(用户可见位置),不用 _MEIPASS(临时目录)
+    base_dir = get_exe_dir()
     env_file = os.path.join(base_dir, '.env')
 
     def read_env():
