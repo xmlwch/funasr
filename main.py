@@ -86,7 +86,8 @@ from worker import elastic_worker_loop
 
 # ================= 弹性进程池管理器 =================
 class ElasticProcessPool:
-    def __init__(self, max_workers, idle_timeout):
+    def __init__(self, model_type, max_workers, idle_timeout):
+        self.model_type = model_type
         self.max_workers = max_workers
         self.idle_timeout = idle_timeout
         self.task_queue = mp.Queue()
@@ -96,7 +97,7 @@ class ElasticProcessPool:
         self.workers = {}
         self.lock = threading.Lock()
         self.is_shutting_down = False
-        
+
         self.monitor_thread = threading.Thread(target=self._monitor_workers, daemon=True)
         self.monitor_thread.start()
 
@@ -104,13 +105,13 @@ class ElasticProcessPool:
         # 【关键修复】：去掉内部的 with self.lock:！
         # 因为调用此方法的 submit() 已经持有了锁，嵌套获取会导致死锁。
         if len(self.workers) >= self.max_workers: return
-        
+
         # 顺便把 os.getpid() 改成 0，因为 worker.py 里已经用 real_pid 覆盖了
-        p = mp.Process(target=elastic_worker_loop, 
-                       args=(self.task_queue, self.result_queue, self.worker_state, 0, self.idle_timeout))
+        p = mp.Process(target=elastic_worker_loop,
+                       args=(self.task_queue, self.result_queue, self.worker_state, 0, self.idle_timeout, self.model_type))
         p.start()
         self.workers[p.pid] = p
-        print(f"[Pool] 启动新 Worker (PID: {p.pid})，当前总数: {len(self.workers)}")
+        print(f"[{self.model_type.upper()} Pool] 启动新 Worker (PID: {p.pid})，当前 {self.model_type} 池总数: {len(self.workers)}")
 
     def submit(self, func_name, path):
         if self.is_shutting_down:
@@ -182,21 +183,22 @@ def download_http_file(url: str, suffix: str) -> str:
         if os.path.exists(tmp_path): os.unlink(tmp_path)
         raise
 
-pool = None
+asr_pool = None
+ocr_pool = None
 
 class Handler(BaseHTTPRequestHandler):
     request_queue_size = 128
 
     def do_POST(self):
-        if self.path == '/funasr/identify': self._handle_request('asr')
-        elif self.path == '/ocr/identify': self._handle_request('ocr')
+        if self.path == '/funasr/identify': self._handle_request('asr', asr_pool)
+        elif self.path == '/ocr/identify': self._handle_request('ocr', ocr_pool)
         else: self._json(404, {'code': 404, 'message': '未找到路由', 'data': None})
 
-    def _handle_request(self, service_type):
+    def _handle_request(self, service_type, target_pool):
         # 【新增防御】：如果进程池还没有预热完成（没有 idle 的 worker），直接返回 503
-        if not pool.worker_state or all(s.get('status') != 'idle' for s in pool.worker_state.values()):
+        if not target_pool.worker_state or all(s.get('status') != 'idle' for s in target_pool.worker_state.values()):
             # 如果连 worker 都没有，或者都在 initializing/dead，拒绝请求
-            if not any(s.get('status') == 'idle' for s in pool.worker_state.values()):
+            if not any(s.get('status') == 'idle' for s in target_pool.worker_state.values()):
                 self._json(503, {'code': 503, 'message': '服务正在启动/模型加载中，请稍后重试', 'data': None})
                 return
 
@@ -206,11 +208,11 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             if length > MAX_CONTENT_LENGTH:
                 self._json(413, {'code': 413, 'message': '请求体过大', 'data': None}); return
-                
+
             body = json.loads(self.rfile.read(length).decode('utf-8'))
             filepath = body.get('filepath')
             if not filepath:
-                self._json(400, {'code': 400, 'message': '缺少 filepath 参数', 'data': None}); return        
+                self._json(400, {'code': 400, 'message': '缺少 filepath 参数', 'data': None}); return
 
             # 验证文件后缀
             ext = os.path.splitext(filepath)[1].lower()
@@ -228,10 +230,10 @@ class Handler(BaseHTTPRequestHandler):
                 if os.path.getsize(real_path) > MAX_CONTENT_LENGTH:
                     raise ValueError("文件大小超过限制")
 
-            text = pool.submit(service_type, real_path)
+            text = target_pool.submit(service_type, real_path)
             duration = time.time() - start_time
             self._json(200, {'code': 200, 'message': '识别成功', 'data': text, 'duration': round(duration, 3)})
-            
+
         except TimeoutError:
             self._json(408, {'code': 408, 'message': '推理超时', 'data': None})
         except (ValueError, FileNotFoundError) as e:
@@ -280,7 +282,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-host', default=env_host or '127.0.0.1')
     parser.add_argument('-port', type=int, default=env_port or 5001)
-    parser.add_argument('-workers', type=int, default=16)
+    parser.add_argument('-workers', type=int, default=16, help='ASR 与 OCR 池各自的最大 worker 数（默认 16）')
+    parser.add_argument('-asr-workers', type=int, default=None, help='ASR 池最大 worker 数；指定后覆盖 -workers')
+    parser.add_argument('-ocr-workers', type=int, default=None, help='OCR 池最大 worker 数；指定后覆盖 -workers')
     parser.add_argument('-idle', type=int, default=IDLE_TIMEOUT)
     parser.add_argument('-f', type=str, default=None)
     args = parser.parse_args()
@@ -300,52 +304,61 @@ if __name__ == '__main__':
         if result['code'] == 200: print(result['data'])
         else: print('错误: %s' % result['message'], file=sys.stderr)
     else:
+        # -asr-workers / -ocr-workers 显式指定时优先,否则继承 -workers
+        asr_max = args.asr_workers if args.asr_workers is not None else args.workers
+        ocr_max = args.ocr_workers if args.ocr_workers is not None else args.workers
+
         print('=' * 60)
-        print('FunASR & PaddleOCR 弹性伸缩多进程服务')
+        print('FunASR & PaddleOCR 弹性伸缩多进程服务 (ASR/OCR 分池)')
         print('=' * 60)
-        
-        pool = ElasticProcessPool(max_workers=args.workers, idle_timeout=args.idle)
-        
-        print("正在预热 1 套模型...")
-        pool.start_worker()
-        
-        # 【关键修复】：轮询等待 Worker 状态变为 idle，而不是死等 5 秒
-        print("等待模型加载完成...")
-        for i in range(60):  # 最多等 60 秒
-            time.sleep(1)
-            # 检查是否有任何 Worker 的状态变成了 idle
-            states = list(pool.worker_state.values())
-            if any(s.get('status') == 'idle' for s in states):
-                print("✓ 模型预热完成，可以接收请求！")
-                break
-            if i % 5 == 0:
-                print(f"  已等待 {i} 秒...")
-        else:
-            print("警告：等待超时，模型可能加载失败！")
-        
+
+        asr_pool = ElasticProcessPool(model_type='asr', max_workers=asr_max, idle_timeout=args.idle)
+        ocr_pool = ElasticProcessPool(model_type='ocr', max_workers=ocr_max, idle_timeout=args.idle)
+
+        # 两个池各预热 1 个 worker
+        print("正在预热 ASR 与 OCR 模型 (各 1 个)...")
+        asr_pool.start_worker()
+        ocr_pool.start_worker()
+
+        def wait_pool_ready(pool, name, timeout=60):
+            for i in range(timeout):
+                time.sleep(1)
+                if any(s.get('status') == 'idle' for s in pool.worker_state.values()):
+                    print(f"  ✓ {name} 池就绪")
+                    return True
+                if i > 0 and i % 5 == 0:
+                    print(f"  {name} 池: 已等待 {i} 秒...")
+            print(f"警告: {name} 池等待超时，模型可能加载失败！")
+            return False
+
+        wait_pool_ready(asr_pool, "ASR")
+        wait_pool_ready(ocr_pool, "OCR")
+        print("✓ 双池预热完成，可以接收请求！")
+
         env_host = '127.0.0.1' if args.host == '0.0.0.0' else args.host
         with open(env_file, 'w') as f:
             f.write('FUNASR_HOST=%s\n' % env_host)
             f.write('FUNASR_PORT=%d\n' % args.port)
-            
+
         server = ThreadingHTTPServer((args.host, args.port), Handler)
-        
+
         def graceful_shutdown(signum, frame):
             print('\n\n[Server] 收到退出信号，正在准备优雅关闭...')
             threading.Thread(target=server.shutdown, daemon=True).start()
-            
+
         signal.signal(signal.SIGINT, graceful_shutdown)
         signal.signal(signal.SIGTERM, graceful_shutdown)
-        
+
         print(f'\n服务已启动: http://{args.host}:{args.port}')
-        print(f'弹性配置: 最大 {args.workers} 个 Worker | 空闲 {args.idle}秒 后自动缩容至 1 个')
+        print(f'弹性配置: ASR 池 1-{asr_max} 个 Worker | OCR 池 1-{ocr_max} 个 Worker | 空闲 {args.idle}秒 后缩容')
         print('提示: 支持 Ctrl+C 或 kill 命令优雅退出。按 Ctrl+C 停止服务\n')
-        
+
         try:
             server.serve_forever()
         finally:
             print("[Server] 停止接收新请求，正在清理资源...")
             server.server_close()
-            if pool: pool.shutdown()
+            if asr_pool: asr_pool.shutdown()
+            if ocr_pool: ocr_pool.shutdown()
             if os.path.exists(env_file): os.unlink(env_file)
             print("[Server] 服务已完全停止，所有资源已释放。")
