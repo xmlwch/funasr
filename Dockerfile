@@ -20,7 +20,7 @@ COPY requirements.txt .
 COPY funasr.spec .
 
 RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir paddlepaddle -i https://www.paddlepaddle.org.cn/packages/stable/cpu/ && \
+    pip install --no-cache-dir paddlepaddle==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/ && \
     pip install --no-cache-dir -r requirements.txt pyinstaller
 
 RUN pyinstaller funasr.spec
