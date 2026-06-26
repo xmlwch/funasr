@@ -35,7 +35,7 @@ if sys.platform == 'win32':
     os.environ['FLAGS_use_onednn'] = '0'
 
 # ================= 路径与环境兼容 =================
-from _paths import get_pkg_dir, get_exe_dir
+from _paths import get_pkg_dir, get_exe_dir, setup_bundled_env
 
 # BASE_DIR 是打包资源目录(_MEIPASS),用于 paddle/libs、bundled bin 等
 BASE_DIR = get_pkg_dir()
@@ -55,13 +55,9 @@ def get_shared_manager():
     return _shared_manager
 
 
-# 把打包进二进制的 ffmpeg / ccache 目录加到 PATH 最前
-# 这样 torchaudio 探测 ffmpeg、PaddlePaddle 调用 which ccache 都能命中,不再打印告警
+# frozen 时把 _MEIPASS/bin 注入 PATH + 设 TORCHAUDIO_USE_FFMPEG_PATH
 # 注意:ccache 是静态二进制,无 .so,不需要进 LD_LIBRARY_PATH(否则未来同名 .so 会被误加载)
-if getattr(sys, 'frozen', False):
-    _bundled_bin = os.path.join(BASE_DIR, 'bin')
-    if os.path.isdir(_bundled_bin):
-        prepend_env('PATH', _bundled_bin)
+setup_bundled_env()
 
 if sys.platform == 'win32':
     for path in [os.path.join(BASE_DIR, 'torch', 'lib'), os.path.join(BASE_DIR, 'Library', 'bin')]:

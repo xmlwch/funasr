@@ -4,9 +4,12 @@ import time
 import queue
 
 # worker 用 get_exe_dir:模型文件是用户放在 exe 旁边的,不在 _MEIPASS
-from _paths import get_exe_dir
+# setup_bundled_env 把 _MEIPASS/bin 注入 PATH,让 torchaudio 在 worker 里
+# 也能找到 ffmpeg(worker 是独立进程,不会跑 main.py 的模块级代码)
+from _paths import get_exe_dir, setup_bundled_env
 
 BASE_DIR = get_exe_dir()
+setup_bundled_env()
 
 
 # ================= 子进程全局变量 =================
