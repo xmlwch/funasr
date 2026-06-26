@@ -47,23 +47,3 @@ def setup_bundled_env():
     # 2) LD_LIBRARY_PATH 前置 — torchaudio 2.x 通过 dlopen 找 libav*.so/libsw*.so
     if os.path.isdir(lib_dir):
         os.environ['LD_LIBRARY_PATH'] = lib_dir + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')
-
-    # 3) 直接告诉 torchaudio 等库 ffmpeg 在哪(对老版本 torchaudio < 2.x 仍有效)
-    for env_name, fname in (
-        ('TORCHAUDIO_USE_FFMPEG_PATH', 'ffmpeg'),  # torchaudio 0.10~1.x
-        ('FFMPEG_BINARY', 'ffmpeg'),                # pydub / ffmpeg-python
-    ):
-        if os.path.isdir(bin_dir):
-            ffmpeg_path = os.path.join(bin_dir, fname)
-            if os.path.isfile(ffmpeg_path):
-                os.environ[env_name] = ffmpeg_path
-
-    # 4) 诊断:文件存在 ≠ dlopen 能加载(可能缺间接依赖)
-    # 模拟 torchaudio 2.x 实际行为,失败时打信息方便排查
-    if os.path.isdir(lib_dir):
-        import ctypes
-        for _soname in ('libavcodec.so.58', 'libavformat.so.58', 'libavutil.so.56'):
-            try:
-                ctypes.CDLL(_soname)
-            except OSError as e:
-                print(f"[bundled] dlopen {_soname} failed: {e}")

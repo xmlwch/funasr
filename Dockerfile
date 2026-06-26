@@ -22,7 +22,6 @@ RUN mkdir -p /build/bin && \
 # 同时先打印找到的源文件清单,拷完再 ls 验证结果
 RUN mkdir -p /build/lib && \
     echo "=== 源文件(finder): ===" && \
-    find /usr/lib -maxdepth 3 \( -name 'libav*.so*' -o -name 'libsw*.so*' -o -name 'libpostproc.so*' \) 2>/dev/null && \
     find /usr/lib -maxdepth 3 \( -name 'libav*.so*' -o -name 'libsw*.so*' -o -name 'libpostproc.so*' \) -exec cp -L {} /build/lib/ \; 2>/dev/null || true && \
     chmod +x /build/lib/* 2>/dev/null || true && \
     echo "=== 拷完后 /build/lib/: ===" && \
