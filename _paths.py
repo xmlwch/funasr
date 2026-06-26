@@ -46,12 +46,27 @@ def setup_bundled_env():
         # 显式 sanity check:启动时打印哪些 tool 真的在 bin/ 里,方便排查
         for _tool in ('ffmpeg', 'ffprobe', 'ccache'):
             if os.path.isfile(os.path.join(bin_dir, _tool)):
-                print(f"[bundled] {_tool} -> {os.path.join(bin_dir, _tool)}")
+                print(f"[bundled] bin/{_tool} -> {os.path.join(bin_dir, _tool)}")
             else:
-                print(f"[bundled] WARNING: {_tool} missing in {bin_dir}")
+                print(f"[bundled] WARNING: bin/{_tool} missing in {bin_dir}")
     # 2) LD_LIBRARY_PATH 前置 — torchaudio 2.x 通过 dlopen 找 libav*.so/libsw*.so
     if os.path.isdir(lib_dir):
         os.environ['LD_LIBRARY_PATH'] = lib_dir + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')
+        # 显式 sanity check:启动时打印哪些 .so 真的在 lib/ 里
+        for _so in ('libavcodec.so', 'libavformat.so', 'libavutil.so',
+                    'libavfilter.so', 'libavdevice.so', 'libswscale.so',
+                    'libswresample.so', 'libpostproc.so'):
+            if os.path.isfile(os.path.join(lib_dir, _so)):
+                print(f"[bundled] lib/{_so} -> {os.path.join(lib_dir, _so)}")
+            else:
+                # libav*.so 通常带版本号后缀(.so.58 等),is_file 对 .so.* 失败但实际可用
+                # 用通配符扫一下,版本号对了就算在
+                import glob
+                matches = glob.glob(os.path.join(lib_dir, _so + '.*'))
+                if matches:
+                    print(f"[bundled] lib/{_so} -> {matches[0]} (via versioned symlink)")
+                else:
+                    print(f"[bundled] WARNING: lib/{_so} missing in {lib_dir}")
     # 3) 直接告诉 torchaudio 等库 ffmpeg 在哪(对老版本 torchaudio < 2.x 仍有效)
     for env_name, fname in (
         ('TORCHAUDIO_USE_FFMPEG_PATH', 'ffmpeg'),  # torchaudio 0.10~1.x
