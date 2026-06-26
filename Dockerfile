@@ -6,6 +6,14 @@ RUN sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
     sed -i '/buster-updates/d' /etc/apt/sources.list && \
     apt-get update && apt-get install -y --no-install-recommends binutils libgomp1 libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 ffmpeg ccache && rm -rf /var/lib/apt/lists/*
 
+# 把 ffmpeg / ccache 单独收集到 /build/bin/，PyInstaller spec 会引用它们，
+# 运行时 main.py 会把 _MEIPASS/bin 追加到 PATH，消除 torchaudio 与 PaddlePaddle 的告警。
+RUN mkdir -p /build/bin && \
+    cp -L /usr/bin/ffmpeg /usr/bin/ffprobe /build/bin/ 2>/dev/null || true && \
+    cp -L /usr/bin/ccache /build/bin/ 2>/dev/null || true && \
+    chmod +x /build/bin/* 2>/dev/null || true && \
+    ls -la /build/bin/
+
 COPY main.py .
 COPY worker.py .
 COPY requirements.txt .

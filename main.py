@@ -42,6 +42,15 @@ def get_base_dir():
 
 BASE_DIR = get_base_dir()
 
+# 【新增】:把打包进二进制的 ffmpeg / ccache 目录加到 PATH 最前
+# 这样 torchaudio 探测 ffmpeg、PaddlePaddle 调用 which ccache 都能命中,不再打印告警
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    _bundled_bin = os.path.join(sys._MEIPASS, 'bin')
+    if os.path.isdir(_bundled_bin):
+        os.environ['PATH'] = _bundled_bin + os.pathsep + os.environ.get('PATH', '')
+        # 同步更新 LD_LIBRARY_PATH,避免某些二进制运行时找不到 lib
+        os.environ['LD_LIBRARY_PATH'] = _bundled_bin + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')
+
 if sys.platform == 'win32':
     for path in [os.path.join(BASE_DIR, 'torch', 'lib'), os.path.join(BASE_DIR, 'Library', 'bin')]:
         if os.path.exists(path):

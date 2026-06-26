@@ -49,6 +49,18 @@ if not any('Cython' in str(d[0]) and 'Utility' in str(d[0]) for d in datas):
     except ImportError:
         print("Warning: Cython not installed, skipping Cython/Utility collection (paddle may warn at runtime)")
 
+# 【新增】:把 ffmpeg / ccache 打进二进制,运行时由 main.py 把 _MEIPASS/bin 加到 PATH
+# 这样无论目标机器装没装 ffmpeg/ccache,torchaudio 与 PaddlePaddle 都不会再打告警
+local_bin = os.path.join(SPEC_DIR, 'bin')
+if os.path.isdir(local_bin):
+    for _name in os.listdir(local_bin):
+        _src = os.path.join(local_bin, _name)
+        if os.path.isfile(_src):
+            binaries.append((_src, 'bin'))
+            print(f"Added runtime binary: {_src} -> bin/{_name}")
+else:
+    print(f"Warning: local bin/ not found at {local_bin} (ffmpeg/ccache will not be bundled)")
+
 # 补充一些常见的隐藏导入，防止运行时 ModuleNotFoundError
 hiddenimports += [
     'librosa', 'soundfile', 'numpy', 'cv2', 'Cython',
