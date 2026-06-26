@@ -206,11 +206,43 @@ class ElasticProcessPool:
                 for pid in dead_pids:
                     self.workers.pop(pid, None)
                     self.worker_state.pop(pid, None)
-                # 【已知限制】如果 model 文件丢失,worker init 会反复失败,
-                # 每次 submit 等 300s 超时后触发 start_worker 又失败。
-                # 改进:连续 N 次 init 失败应停止重启并告警。本次未实现。
+                # 启动时已通过 preflight_check_models 校验过模型文件存在,
+                # 所以这里 worker 死掉通常是运行时问题(OOM、bug 等),系统自愈:
+                # 下次 submit 看到 alive 不足会触发 start_worker。
 
 # ================= 辅助函数与 HTTP 服务器 =================
+def preflight_check_models(pools: dict):
+    """启动前校验每个池需要的模型文件/目录,缺则 raise FileNotFoundError。
+
+    这样在 worker 反复 init 失败 300s 超时之前就 fail-fast,
+    错误信息直接告诉用户缺什么、放在哪、怎么覆盖路径。
+    """
+    exe_dir = get_exe_dir()
+    for model_type in pools:
+        if model_type == 'asr':
+            model_dir = os.environ.get("FUNASR_MODEL_DIR", os.path.join(exe_dir, "model"))
+            # 必需文件:对应 worker.py 的 SenseVoiceSmall(model_dir, quantize=True) 加载路径
+            required = ['model_quant.onnx', 'tokens.json', 'config.yaml']
+            missing = [f for f in required if not os.path.isfile(os.path.join(model_dir, f))]
+            if missing:
+                raise FileNotFoundError(
+                    f"ASR 模型文件缺失: {model_dir}/{', '.join(missing)}\n"
+                    f"  下载:见 README 中的 wget 命令\n"
+                    f"  或设置环境变量 FUNASR_MODEL_DIR 指向已就绪的模型目录"
+                )
+        elif model_type == 'ocr':
+            ocr_dir = os.environ.get("FUNASR_OCR_MODEL_DIR", os.path.join(exe_dir, "model", "paddleocr"))
+            # 必需子目录:对应 worker.py 的 PaddleOCR(det/rec/cls model_dir) 加载路径
+            required = ['det', 'rec', 'cls']
+            missing = [d for d in required if not os.path.isdir(os.path.join(ocr_dir, d))]
+            if missing:
+                raise FileNotFoundError(
+                    f"OCR 模型目录缺失: {ocr_dir}/{', '.join(missing)}/\n"
+                    f"  下载:见 README 中的 curl/tar 命令\n"
+                    f"  或设置环境变量 FUNASR_OCR_MODEL_DIR 指向已就绪的目录"
+                )
+
+
 def download_http_file(url: str, suffix: str) -> str:
     fd, tmp_path = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
@@ -358,6 +390,14 @@ if __name__ == '__main__':
             'asr': ElasticProcessPool(model_type='asr', max_workers=asr_max, idle_timeout=args.idle),
             'ocr': ElasticProcessPool(model_type='ocr', max_workers=ocr_max, idle_timeout=args.idle),
         })
+
+        # 启动前 fail-fast:校验所有池的模型文件,缺则直接退出,避免 worker 反复
+        # init 失败、每次 submit 等 300s 超时的恢复循环
+        try:
+            preflight_check_models(pools)
+        except FileNotFoundError as e:
+            print(f"\n❌ {e}\n", file=sys.stderr)
+            sys.exit(1)
 
         # 各池预热 1 个 worker,然后并行等就绪(总等待 = max(各池) 而非 sum)
         print("正在预热 ASR 与 OCR 模型 (各 1 个)...")
