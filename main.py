@@ -138,6 +138,11 @@ ALLOWED_INPUT_DIRS_DEFAULT = ','.join([
     "F:\\桌面\\0xi样本\\",
     "/opt/KY/AppsRoot"
 ])
+ALLOWED_INPUT_HOSTS_DEFAULT = ','.join([
+    '127.0.0.1',
+    'localhost',
+    '::1',
+])
 
 # 【生产改造 M2】魔法数字提取 — 集中管理便于调优
 # 仅 main __main__ 用的常量;handler / security / pool 的常量已下放到各自模块
@@ -246,7 +251,7 @@ if __name__ == '__main__':
                         help='从指定环境变量名读取 API 密钥(避免密钥进 ps)')
     # 【内部主机白名单】允许指定可信内网 host / IP / CIDR,SSRF 校验放过这些
     # 默认空 = 严格 SSRF(仅公网 + hostname 黑名单)。生产内网服务需要显式开
-    parser.add_argument('-allowed-internal-hosts', type=str, default='',
+    parser.add_argument('-allowed-internal-hosts', type=str, default=ALLOWED_INPUT_HOSTS_DEFAULT,
                         help=('可信内网主机白名单(逗号分隔),绕过 SSRF 内网检查。\n'
                               '支持 hostname / IP 字面量 / CIDR,例:\n'
                               '  127.0.0.1,localhost\n'
