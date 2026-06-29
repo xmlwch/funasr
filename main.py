@@ -253,7 +253,10 @@ if __name__ == '__main__':
                               '  127.0.0.1,localhost\n'
                               '  192.168.1.100,internal.api.local\n'
                               '  10.0.0.0/8,192.168.0.0/16'))
-    parser.add_argument('-f', type=str, default=None)
+    parser.add_argument('-f', type=str, default=None,
+                        help=('CLI 客户端模式:不启服务,直接调用 -host:-port 上的服务,\n'
+                              '按扩展名自动选 ASR 或 OCR 端点,结果打到 stdout。\n'
+                              '例: -f audio.wav(识别语音)/ -f image.png(识别图片)/ -f http://...'))
     args = parser.parse_args()
 
     # 【生产改造 C1】解析最终 API key(命令行 > 环境变量)
