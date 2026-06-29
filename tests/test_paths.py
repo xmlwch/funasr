@@ -15,7 +15,9 @@ class TestGetPkgDir:
         sys.frozen = False
         result = get_pkg_dir()
         assert os.path.isabs(result)
-        assert result.endswith('funASR') or 'funASR' in result
+        # 文件名大小写不敏感 — Windows 上是 funASR,Linux CI 上是 funasr
+        # (GitHub repo xmlwch/funasr 全小写,Linux case-sensitive)
+        assert os.path.basename(result).lower() == 'funasr'
 
     def test_frozen_mode(self, monkeypatch):
         """frozen 时返回 _MEIPASS"""
