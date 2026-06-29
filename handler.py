@@ -60,6 +60,16 @@ class Handler(BaseHTTPRequestHandler):
     request_queue_size = HTTP_REQUEST_QUEUE_SIZE
     _api_key = None  # __main__ 启动时注入
 
+    # 隐藏实现指纹 — BaseHTTPRequestHandler 默认发 "Server: BaseHTTP/x.x Python/y.y.z"
+    # 覆盖 send_response 跳过 Server header(置空 server_version 不够,Python 还会发空值)
+    def send_response(self, code, message=None):
+        self.log_request(code)
+        if message is None:
+            message = self.responses[code][0]
+        self.send_response_only(code, message)
+        self.send_header('Date', self.date_time_string())
+
+
     @classmethod
     def set_api_key(cls, key):
         cls._api_key = key
