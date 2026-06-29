@@ -156,6 +156,7 @@ from handler import (  # noqa: E402,F401
     IMAGE_EXTS,
     pools,
     _ALLOWED_DIRS,
+    _ALLOWED_HOSTS,
 )
 # 【L1 拆分】ElasticProcessPool 已独立到 pool.py
 from pool import ElasticProcessPool  # noqa: E402,F401
@@ -243,6 +244,14 @@ if __name__ == '__main__':
                         help='API 密钥(启用后客户端必须带 X-API-Key Header,建议用 -api-key-env)')
     parser.add_argument('-api-key-env', type=str, default=None,
                         help='从指定环境变量名读取 API 密钥(避免密钥进 ps)')
+    # 【内部主机白名单】允许指定可信内网 host / IP / CIDR,SSRF 校验放过这些
+    # 默认空 = 严格 SSRF(仅公网 + hostname 黑名单)。生产内网服务需要显式开
+    parser.add_argument('-allowed-internal-hosts', type=str, default='',
+                        help=('可信内网主机白名单(逗号分隔),绕过 SSRF 内网检查。\n'
+                              '支持 hostname / IP 字面量 / CIDR,例:\n'
+                              '  127.0.0.1,localhost\n'
+                              '  192.168.1.100,internal.api.local\n'
+                              '  10.0.0.0/8,192.168.0.0/16'))
     parser.add_argument('-f', type=str, default=None)
     args = parser.parse_args()
 
@@ -268,6 +277,17 @@ if __name__ == '__main__':
         ]
     else:
         _ALLOWED_DIRS.clear()
+
+    # 【生产改造 task39】解析 -allowed-internal-hosts,填 _ALLOWED_HOSTS
+    # 默认空 = 严格 SSRF,生产内网场景需显式开
+    from security import _parse_trusted_hosts
+    parsed = _parse_trusted_hosts(args.allow_internal_hosts)
+    _ALLOWED_HOSTS['hostnames'] = parsed['hostnames']
+    _ALLOWED_HOSTS['ip_literals'] = parsed['ip_literals']
+    _ALLOWED_HOSTS['cidrs'] = parsed['cidrs']
+    if parsed['hostnames'] or parsed['ip_literals'] or parsed['cidrs']:
+        logger.info("-allowed-internal-hosts 配置: %d hostnames, %d ips, %d cidrs",
+                    len(parsed['hostnames']), len(parsed['ip_literals']), len(parsed['cidrs']))
 
     if args.f:
         ext = os.path.splitext(args.f)[1].lower()

@@ -35,6 +35,11 @@ pools: dict = {}
 # 路径白名单:__main__ 启动前展开为绝对路径列表
 _ALLOWED_DIRS = []
 
+# 内部主机信任列表(SSRF bypass):__main__ 解析 -allowed-internal-hosts
+# 结构:security._parse_trusted_hosts 返回 {'hostnames','ip_literals','cidrs'}
+# 默认空 = 严格 SSRF(只允许公网)
+_ALLOWED_HOSTS = {'hostnames': set(), 'ip_literals': set(), 'cidrs': []}
+
 # 支持的文件后缀
 AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.opus', '.ape', '.ac3'}
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp', '.tif', '.jfif'}
@@ -133,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if filepath.startswith(("http://", "https://")):
                 suffix = "_audio" if service_type == "asr" else "_image"
-                tmp_path = download_http_file(filepath, suffix)
+                tmp_path = download_http_file(filepath, suffix, _ALLOWED_HOSTS)
                 real_path = tmp_path
             else:
                 real_path = _is_safe_path(filepath, _ALLOWED_DIRS)
