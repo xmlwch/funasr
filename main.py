@@ -227,7 +227,7 @@ if __name__ == '__main__':
     parser.add_argument('-prewarm', type=int, default=PREWARM_DEFAULT, help=f'每池启动时预热的 worker 数(默认 {PREWARM_DEFAULT});设为 20 可全量预热但启动慢且内存高')
     parser.add_argument('-asr-prewarm', type=int, default=None, help='ASR 池预热数;指定后覆盖 -prewarm')
     parser.add_argument('-ocr-prewarm', type=int, default=None, help='OCR 池预热数;指定后覆盖 -prewarm')
-    parser.add_argument('-min-workers', type=int, default=1, help='空闲超时后最少保留多少 worker(默认 1);生产推荐设为 -prewarm 同值,避免突发流量冷启动')
+    parser.add_argument('-min-workers', type=int, default=PREWARM_DEFAULT, help='空闲超时后最少保留多少 worker(默认 1);生产推荐设为 -prewarm 同值,避免突发流量冷启动')
     parser.add_argument('-asr-min-workers', type=int, default=None, help='ASR 池保活数;指定后覆盖 -min-workers')
     parser.add_argument('-ocr-min-workers', type=int, default=None, help='OCR 池保活数;指定后覆盖 -min-workers')
     parser.add_argument('-max-queue', type=int, default=200, help='单池最大排队任务数(in_flight - alive 的上限),超过直接 503 防 OOM')
