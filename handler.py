@@ -10,7 +10,6 @@
 
 【L1 拆分】handler.py 是 main.py 的"前端层",安全/池逻辑在 security.py/pool.py。
 """
-import hashlib
 import hmac
 import json
 import logging
@@ -23,31 +22,24 @@ from security import _is_safe_path, download_http_file
 
 logger = logging.getLogger('funasr.handler')
 
-# 路由表:HTTP path 前缀 → 模型类型
 ROUTES = {
     '/funasr/identify': 'asr',
     '/ocr/identify': 'ocr',
 }
 
-# 池注册表:model_type → ElasticProcessPool。__main__ 启动时填充。
+# __main__ 启动时填充
 pools: dict = {}
 
-# 路径白名单:__main__ 启动前展开为绝对路径列表
+# __main__ 启动前展开为绝对路径列表
 _ALLOWED_DIRS = []
 
-# 内部主机信任列表(SSRF bypass):__main__ 解析 -allowed-internal-hosts
-# 结构:security._parse_trusted_hosts 返回 {'hostnames','ip_literals','cidrs'}
-# 默认空 = 严格 SSRF(只允许公网)
+# __main__ 解析 -allowed-internal-hosts 后填充
 _ALLOWED_HOSTS = {'hostnames': set(), 'ip_literals': set(), 'cidrs': []}
 
-# 支持的文件后缀
 AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.opus', '.ape', '.ac3'}
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp', '.tif', '.jfif'}
 
-# 请求体最大大小(防 DoS)
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024
-
-# HTTP server 排队连接数
 HTTP_REQUEST_QUEUE_SIZE = 128
 
 

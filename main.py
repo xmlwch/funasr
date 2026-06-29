@@ -103,11 +103,8 @@ def _expand_allowed_dirs(dirs_str: str, max_results: int = 1000) -> list:
     return expanded
 
 
-# mp.Manager() 单例已移到 pool.py(L1 拆分)
-
-
-# frozen 时把 _MEIPASS/bin 注入 PATH + 设 TORCHAUDIO_USE_FFMPEG_PATH
-# 注意:ccache 是静态二进制,无 .so,不需要进 LD_LIBRARY_PATH(否则未来同名 .so 会被误加载)
+# frozen 时把 _MEIPASS/bin 注入 PATH
+# ccache 是静态二进制,无 .so,不需要进 LD_LIBRARY_PATH
 setup_bundled_env()
 
 if sys.platform == 'win32':
@@ -207,7 +204,6 @@ from security import (  # noqa: E402,F401  (从 security 透传)
 )
 
 
-
 if __name__ == '__main__':
     # .env 放在 exe 旁边(用户可见位置),不用 _MEIPASS(临时目录)
     base_dir = get_exe_dir()
@@ -283,8 +279,7 @@ if __name__ == '__main__':
     else:
         _ALLOWED_DIRS.clear()
 
-    # 【生产改造 task39】解析 -allowed-internal-hosts,填 _ALLOWED_HOSTS
-    # 默认空 = 严格 SSRF,生产内网场景需显式开
+    # 解析 -allowed-internal-hosts,填 _ALLOWED_HOSTS(默认 127.0.0.1,localhost,::1)
     from security import _parse_trusted_hosts
     parsed = _parse_trusted_hosts(args.allowed_internal_hosts)
     _ALLOWED_HOSTS['hostnames'] = parsed['hostnames']

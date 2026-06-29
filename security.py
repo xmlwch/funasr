@@ -18,8 +18,7 @@ import tempfile
 import urllib.request
 from urllib.parse import urlparse
 
-# 从 main 导入常量(max 文件大小等),保持单一来源
-# 用 try/except 避免 cycle(若 main 反向 import security)
+# 模块本地常量 — 与 main 解耦(避免循环依赖)
 _MAX_CONTENT_LENGTH = 100 * 1024 * 1024
 _DOWNLOAD_TIMEOUT = 60
 
