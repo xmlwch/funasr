@@ -1,6 +1,9 @@
 import os
 import sys
 import traceback
+import ipaddress
+import socket
+import hmac
 import json
 import time
 import shutil
@@ -13,6 +16,7 @@ import queue
 import uuid
 import warnings
 import signal
+from urllib.parse import urlparse
 
 # ================= 基础环境与警告屏蔽 =================
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -91,6 +95,13 @@ INFERENCE_TIMEOUT = 300
 DOWNLOAD_TIMEOUT = 60
 IDLE_TIMEOUT = 300
 
+# 【生产改造】C4 路径白名单:默认仅允许上传目录 + 系统临时目录
+# 部署时务必通过 -allowed-dirs 覆盖为真实业务目录,例如 /data/uploads
+ALLOWED_INPUT_DIRS_DEFAULT = ','.join([
+    os.path.expanduser('~/uploads'),
+    tempfile.gettempdir(),
+])
+
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor
 
@@ -106,6 +117,10 @@ ROUTES = {
 }
 # 池注册表:model_type → ElasticProcessPool。__main__ 启动时填充。
 pools: dict = {}
+
+# 【生产改造 C4】路径白名单:__main__ 启动前展开为绝对路径列表
+# 改动后会写入,_handle_request 期间只读
+_ALLOWED_DIRS = []  # type: list
 
 # 【关键修复】：从独立的 worker 模块导入循环函数，彻底解决 PyInstaller 打包报错
 from worker import elastic_worker_loop 
@@ -300,11 +315,70 @@ def preflight_check_models(pools: dict):
                 )
 
 
+def _is_safe_url(url: str) -> bool:
+    """【生产改造 C3】SSRF 防御:拒绝指向内网/metadata 的 URL
+    - scheme 仅允许 http/https
+    - getaddrinfo 解析所有 IP,任意一个在内网段就拒
+    - 常见 metadata 主机名黑名单
+    """
+    try:
+        p = urlparse(url)
+        if p.scheme not in ('http', 'https'):
+            return False
+        host = p.hostname
+        if not host:
+            return False
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return False
+        for info in set(infos):
+            ip_str = info[4][0]
+            ip = ipaddress.ip_address(ip_str)
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+                return False
+        if host.lower() in {'metadata.google.internal', 'metadata',
+                            'kubernetes.default.svc', 'localhost'}:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """【生产改造 C3】禁止 HTTP 30x 重定向,防 30x 跳到内网绕开 SSRF 防护"""
+    def http_error_301(self, req, fp, code, msg, headers): self._block(headers)
+    def http_error_302(self, req, fp, code, msg, headers): self._block(headers)
+    def http_error_303(self, req, fp, code, msg, headers): self._block(headers)
+    def http_error_307(self, req, fp, code, msg, headers): self._block(headers)
+    def http_error_308(self, req, fp, code, msg, headers): self._block(headers)
+    def _block(self, headers):
+        raise ValueError(f"HTTP redirect not allowed: {headers.get('Location')}")
+
+
+def _is_safe_path(filepath: str, allowed_dirs: list) -> str:
+    """【生产改造 C4】路径白名单防御:
+    - os.path.realpath 解析符号链接和 ..
+    - 必须在 allowed_dirs 列表内的某个目录下(允许该目录本身或其子文件)
+    - 返回规范化后的绝对路径
+    """
+    real = os.path.realpath(filepath)
+    for allowed in allowed_dirs:
+        if real == allowed or real.startswith(allowed + os.sep):
+            return real
+    raise ValueError(f"Path not allowed (不在白名单目录): {filepath}")
+
+
 def download_http_file(url: str, suffix: str) -> str:
+    if not _is_safe_url(url):
+        raise ValueError(f"URL not allowed: {url}")
     fd, tmp_path = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
     try:
-        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as resp:
+        # 用自定义 opener(带 NoRedirect)+ 全局安装,避免污染其他 URL 调用
+        opener = urllib.request.build_opener(_NoRedirect())
+        with opener.open(url, timeout=DOWNLOAD_TIMEOUT) as resp:
             content_length = resp.headers.get('Content-Length')
             if content_length and int(content_length) > MAX_CONTENT_LENGTH:
                 os.unlink(tmp_path); raise ValueError("文件大小超过限制")
@@ -316,8 +390,29 @@ def download_http_file(url: str, suffix: str) -> str:
 
 class Handler(BaseHTTPRequestHandler):
     request_queue_size = 128
+    # 【生产改造 C1】API Key 认证:__main__ 启动时注入
+    _api_key = None  # type: str | None
+
+    def _check_auth(self) -> bool:
+        """【生产改造 C1】校验 X-API-Key Header
+        未设置 _api_key → 不校验(开发模式,与默认 127.0.0.1 host 形成双重防御)
+        已设置 → 必须 Header 带正确密钥,hmac.compare_digest 防时序攻击
+        """
+        if not Handler._api_key:
+            return True
+        return hmac.compare_digest(
+            self.headers.get('X-API-Key', ''), Handler._api_key)
 
     def do_POST(self):
+        # 【生产改造 C1】POST 入口先认证
+        if not self._check_auth():
+            self.send_response(401)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('WWW-Authenticate', 'X-API-Key')
+            self.end_headers()
+            self.wfile.write(json.dumps({'code': 401, 'message': 'Unauthorized', 'data': None},
+                                        ensure_ascii=False).encode('utf-8'))
+            return
         model_type = ROUTES.get(self.path)
         if model_type is None:
             self._json(404, {'code': 404, 'message': '未找到路由', 'data': None})
@@ -360,7 +455,8 @@ class Handler(BaseHTTPRequestHandler):
                 tmp_path = download_http_file(filepath, suffix)
                 real_path = tmp_path
             else:
-                real_path = filepath
+                # 【生产改造 C4】路径白名单校验,防任意文件读取
+                real_path = _is_safe_path(filepath, _ALLOWED_DIRS)
                 if os.path.getsize(real_path) > MAX_CONTENT_LENGTH:
                     raise ValueError("文件大小超过限制")
 
@@ -379,9 +475,10 @@ class Handler(BaseHTTPRequestHandler):
             if tmp_path and os.path.exists(tmp_path): os.unlink(tmp_path)
 
     def do_GET(self):
-        if self.path in ['/funasr/health', '/ocr/health']:
-            self._json(200, {'code': 200, 'status': 'ok'})
-        elif self.path == '/metrics':
+        # 【生产改造 C1】/metrics 走认证(防暴露池容量给侦察)
+        if self.path == '/metrics':
+            if not self._check_auth():
+                self._json(401, {'code': 401, 'message': 'Unauthorized', 'data': None}); return
             # Prometheus 文本格式 — 每池一行,带 model 标签
             lines = []
             for pool in pools.values():
@@ -394,6 +491,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.end_headers()
             self.wfile.write(body)
+        elif self.path in ['/funasr/health', '/ocr/health']:
+            # /health 不加认证(K8s readiness/liveness probe 需要直接访问)
+            self._json(200, {'code': 200, 'status': 'ok'})
         else:
             self._json(405, {'code': 405, 'message': '仅支持 POST 或 /metrics /health', 'data': None})
 
@@ -440,8 +540,29 @@ if __name__ == '__main__':
     parser.add_argument('-asr-max-queue', type=int, default=None, help='ASR 池队列上限;指定后覆盖 -max-queue')
     parser.add_argument('-ocr-max-queue', type=int, default=None, help='OCR 池队列上限;指定后覆盖 -max-queue')
     parser.add_argument('-idle', type=int, default=IDLE_TIMEOUT)
+    # 【生产改造 C4】路径白名单参数
+    parser.add_argument('-allowed-dirs', type=str, default=ALLOWED_INPUT_DIRS_DEFAULT,
+                        help='允许的文件路径白名单(逗号分隔绝对路径),展开 ~ 与环境变量')
+    # 【生产改造 C1】API Key 认证:任一方式设置即启用,未设置则不强制(开发模式)
+    parser.add_argument('-api-key', type=str, default=None,
+                        help='API 密钥(启用后客户端必须带 X-API-Key Header,建议用 -api-key-env)')
+    parser.add_argument('-api-key-env', type=str, default=None,
+                        help='从指定环境变量名读取 API 密钥(避免密钥进 ps)')
     parser.add_argument('-f', type=str, default=None)
     args = parser.parse_args()
+
+    # 【生产改造 C1】解析最终 API key(命令行 > 环境变量)
+    _api_key = args.api_key
+    if args.api_key_env:
+        _api_key = os.environ.get(args.api_key_env) or _api_key
+    # 注入到 Handler(类变量,所有请求共享)
+    Handler._api_key = _api_key
+
+    # 【生产改造 C4】展开白名单目录为绝对路径列表
+    _ALLOWED_DIRS[:] = [
+        os.path.realpath(os.path.expanduser(os.path.expandvars(d.strip())))
+        for d in args.allowed_dirs.split(',') if d.strip()
+    ] if args.allowed_dirs else []  # 空字符串 = 全部拒绝
 
     if args.f:
         ext = os.path.splitext(args.f)[1].lower()
@@ -450,10 +571,14 @@ if __name__ == '__main__':
         else: print('错误: 不支持的文件类型', file=sys.stderr); sys.exit(1)
 
         base = 'http://%s:%d' % (args.host, args.port)
+        # 【生产改造 C1】-f 模式带 X-API-Key Header(已设置 api-key 时)
+        cli_headers = {'X-API-Key': _api_key} if _api_key else {}
         try: urllib.request.urlopen(base + '/' + service + '/health', timeout=3)
         except Exception: print('错误: 服务未启动', file=sys.stderr); sys.exit(1)
         req = json.dumps({'filepath': args.f}).encode('utf-8')
-        resp = urllib.request.urlopen(base + '/' + service + '/identify', data=req, timeout=300)
+        req_obj = urllib.request.Request(base + '/' + service + '/identify', data=req,
+                                          headers={'Content-Type': 'application/json', **cli_headers})
+        resp = urllib.request.urlopen(req_obj, timeout=300)
         result = json.loads(resp.read().decode('utf-8'))
         if result['code'] == 200: print(result['data'])
         else: print('错误: %s' % result['message'], file=sys.stderr)
