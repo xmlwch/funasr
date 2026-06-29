@@ -173,10 +173,13 @@ class ElasticProcessPool:
 
         self.monitor_thread = threading.Thread(target=self._monitor_workers, daemon=True)
         self.monitor_thread.start()
+        # 【生产改造 M5】stats() 本地缓存 — 高频 /metrics scrape 时避免跨进程读 Manager.dict
+        self._stats_cache = None
+        self._stats_cache_time = 0.0
 
     def start_worker(self):
-        # 【关键修复】：去掉内部的 with self.lock:！
-        # 因为调用此方法的 submit() 已经持有了锁，嵌套获取会导致死锁。
+        # 【生产改造 M4】本方法必须在调用方不持锁时才进(锁外 spawn)
+        # 因为 mp.Process.start() 内部阻塞 ~10ms,在锁内会阻塞其他 submit
         if len(self.workers) >= self.max_workers: return
 
         # 顺便把 os.getpid() 改成 0，因为 worker.py 里已经用 real_pid 覆盖了
@@ -207,7 +210,9 @@ class ElasticProcessPool:
 
         task_id = uuid.uuid4().hex
 
+        # 【生产改造 M4】need_scale 标记 — start_worker 移到锁外
         try:
+            need_scale = False
             with self.lock:
                 # 【生产改造】先占 in_flight 再判断扩容——
                 # 这样并发提交时每个请求都立刻看到自己在飞,
@@ -220,13 +225,16 @@ class ElasticProcessPool:
                     # 【BUG 修复】不再这里 -=1 — finally 会统一递减
                     # 之前双递减会导致实际限速比 alive+max_queue 少 1
                     raise RuntimeError(f"队列已满({alive} worker / {self.max_queue} 排队上限)")
-                # 主动扩容:in_flight 接近 alive 时立即 spawn 新 worker
+                # 主动扩容:in_flight 接近 alive 时标记,锁外 spawn
                 # 不再依赖 busy==alive(那个判断有 ms 级延迟,会漏触发)
                 if alive < self.max_workers and self.in_flight >= alive:
-                    self.start_worker()
+                    need_scale = True
                     self.scale_events += 1
                 # task dict 只放可序列化的简单数据(无 Queue/Pipe/Lock 等)
                 self.task_queue.put({'id': task_id, 'func': func_name, 'path': path})
+
+            if need_scale:
+                self.start_worker()  # 锁外 spawn,不阻塞其他 submit
 
             # 轮询 self.results 等 worker 写入,task_id 唯一所以不会拿错
             start_time = time.time()
@@ -250,6 +258,10 @@ class ElasticProcessPool:
 
     def stats(self):
         """池状态快照 — 用于 /metrics 端点和日志。线程安全。"""
+        # 【生产改造 M5】1 秒本地缓存,避免高频 scrape 时跨进程 Manager.dict 读
+        now = time.time()
+        if self._stats_cache and now - self._stats_cache_time < STATS_CACHE_TTL:
+            return self._stats_cache
         with self.lock:
             # 【BUG 修复】用 items() 一次拿到 (pid, state) 快照,避免两次远程调用之间被改
             state_snapshot = dict(self.worker_state.items())
@@ -259,7 +271,7 @@ class ElasticProcessPool:
             # loading:已 spawn 但 worker_state 还没写入(模型加载中)
             loaded_pids = {pid for pid in state_snapshot.keys() if pid in alive_pids}
             loading = alive - len(loaded_pids)
-            return {
+            result = {
                 'model_type': self.model_type,
                 'alive': alive,
                 'max': self.max_workers,
@@ -271,6 +283,9 @@ class ElasticProcessPool:
                 'dead': sum(1 for s in states if s.get('status') == 'dead'),
                 'scale_events': self.scale_events,
             }
+            self._stats_cache = result
+            self._stats_cache_time = now
+            return result
 
     def shutdown(self):
         self.is_shutting_down = True
