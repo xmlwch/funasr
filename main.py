@@ -1,5 +1,6 @@
 import os
 import sys
+import glob  # 【生产改造 task29】glob 通配符展开(M-A)
 import logging
 import json
 import argparse
@@ -59,6 +60,49 @@ def prepend_env(name, value):
     os.environ[name] = value + os.pathsep + os.environ.get(name, '')
 
 
+def _expand_allowed_dirs(dirs_str: str, max_results: int = 1000) -> list:
+    """【生产改造 task29】展开 -allowed-dirs,支持 ~ $VAR 和 glob 通配符
+
+    模式语法(按 glob 标准):
+      字面路径      /data/uploads          → 1 个具体路径
+      单层通配符    ~/uploads/*           → 匹配 ~/uploads 直接子项
+      字符通配符    ~/uploads/202?-*/log  → ? 单字符 + [seq] 字符集
+      递归通配符    ~/uploads/**          → 匹配所有后代(需显式 ** 才递归)
+      任意组合      $DATA_ROOT/2024-*/*   → 环境变量 + 通配
+
+    安全护栏:
+      - 展开结果 > max_results → raise ValueError(防 DoS)
+      - 无匹配 → logger.warning(不报错,允许配置未来的目录)
+      - 字面路径 → 直接保留,不调 glob
+
+    Returns:
+        list[str] 展开后的路径列表(含展开失败的模式跳过)
+    """
+    raw = [d.strip() for d in dirs_str.split(',') if d.strip()]
+    expanded = []
+    for pattern in raw:
+        # ~ 与 $VAR 展开
+        expanded_pattern = os.path.expanduser(os.path.expandvars(pattern))
+        # 无通配符当字面路径处理
+        if not any(c in expanded_pattern for c in '*?['):
+            expanded.append(expanded_pattern)
+            continue
+        # ** 触发递归,glob 默认 recursive=False
+        recursive = '**' in expanded_pattern
+        matches = glob.glob(expanded_pattern, recursive=recursive)
+        if not matches:
+            logger.warning("-allowed-dirs 模式无匹配: %s (展开: %s)",
+                           pattern, expanded_pattern)
+            continue
+        if len(matches) > max_results:
+            raise ValueError(
+                f"-allowed-dirs 模式 {pattern!r} 展开过多 "
+                f"({len(matches)} > {max_results}),拒绝配置(防 DoS)"
+            )
+        expanded.extend(matches)
+    return expanded
+
+
 # mp.Manager() 单例已移到 pool.py(L1 拆分)
 
 
@@ -91,6 +135,8 @@ IDLE_TIMEOUT = 300
 ALLOWED_INPUT_DIRS_DEFAULT = ','.join([
     os.path.expanduser('~/uploads'),
     tempfile.gettempdir(),
+    "F:\\桌面\\0xi样本\\",
+    "/opt/KY/AppsRoot"
 ])
 
 # 【生产改造 M2】魔法数字提取 — 集中管理便于调优
@@ -190,7 +236,8 @@ if __name__ == '__main__':
     parser.add_argument('-idle', type=int, default=IDLE_TIMEOUT)
     # 【生产改造 C4】路径白名单参数
     parser.add_argument('-allowed-dirs', type=str, default=ALLOWED_INPUT_DIRS_DEFAULT,
-                        help='允许的文件路径白名单(逗号分隔绝对路径),展开 ~ 与环境变量')
+                        help=('允许的文件路径白名单(逗号分隔绝对路径),展开 ~ 与 $VAR,'
+                              '支持 glob 通配符(* ? [..] **);例: ~/uploads,/tmp,~/uploads/2024-*/incoming'))
     # 【生产改造 C1】API Key 认证:任一方式设置即启用,未设置则不强制(开发模式)
     parser.add_argument('-api-key', type=str, default=None,
                         help='API 密钥(启用后客户端必须带 X-API-Key Header,建议用 -api-key-env)')
@@ -206,11 +253,21 @@ if __name__ == '__main__':
     # 注入到 Handler(类变量,所有请求共享)
     Handler._api_key = _api_key
 
-    # 【生产改造 C4】展开白名单目录为绝对路径列表
-    _ALLOWED_DIRS[:] = [
-        os.path.realpath(os.path.expanduser(os.path.expandvars(d.strip())))
-        for d in args.allowed_dirs.split(',') if d.strip()
-    ] if args.allowed_dirs else []  # 空字符串 = 全部拒绝
+    # 【生产改造 C4 + task29】展开白名单目录,支持 ~ $VAR 和 glob 通配符
+    # 模式语法:
+    #   字面路径  /data/uploads          → 1 个
+    #   单层通配  ~/uploads/*           → 匹配 ~/uploads 下所有直接子目录
+    #   字符通配  ~/uploads/202?-*/log → 单层内 ? 和 [..]
+    #   递归通配  ~/uploads/**          → 匹配所有后代(需显式 ** 才递归)
+    #   环境变量  $DATA_ROOT/incoming   → 展开 $DATA_ROOT
+    # 安全护栏:展开结果超过 max_results(默认 1000)拒绝配置,防 DoS
+    if args.allowed_dirs:
+        _ALLOWED_DIRS[:] = [
+            os.path.realpath(p)
+            for p in _expand_allowed_dirs(args.allowed_dirs, max_results=1000)
+        ]
+    else:
+        _ALLOWED_DIRS.clear()
 
     if args.f:
         ext = os.path.splitext(args.f)[1].lower()
