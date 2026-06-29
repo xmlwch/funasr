@@ -4,6 +4,7 @@ import traceback
 import ipaddress
 import socket
 import hmac
+import logging
 import json
 import time
 import shutil
@@ -17,6 +18,14 @@ import uuid
 import warnings
 import signal
 from urllib.parse import urlparse
+
+# 【生产改造 H5】结构化 logging(暂时最小化,M1 批会扩展)
+logging.basicConfig(
+    level=os.environ.get('FUNASR_LOG_LEVEL', 'INFO'),
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%dT%H:%M:%S',
+)
+logger = logging.getLogger('funasr.handler')
 
 # ================= 基础环境与警告屏蔽 =================
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -221,6 +230,9 @@ class ElasticProcessPool:
                     raise TimeoutError("推理超时")
                 time.sleep(0.05)  # 50ms 轮询,既不浪费 CPU 也不让用户等太久
         finally:
+            # 【生产改造 H2】清理 results,worker 晚到写入也无所谓 — 下次 submit 也会清理
+            # 防 TimeoutError 后 worker 仍写回结果造成的内存泄漏
+            self.results.pop(task_id, None)
             # 【BUG 修复】无论成功 / 队列满 / 超时 / 关闭,都只递减一次
             with self.lock:
                 self.in_flight -= 1
@@ -467,10 +479,17 @@ class Handler(BaseHTTPRequestHandler):
         except TimeoutError:
             self._json(408, {'code': 408, 'message': '推理超时', 'data': None})
         except (ValueError, FileNotFoundError) as e:
+            # 校验类错误信息对用户调试有用(已被 _is_safe_path 等过滤),但同时记日志
+            logger.warning("client error (path=%s): %s", self.path, e)
             self._json(400, {'code': 400, 'message': str(e), 'data': None})
         except Exception as e:
-            status_code = 503 if "正在关闭" in str(e) else 500
-            self._json(status_code, {'code': status_code, 'message': str(e) or '系统繁忙', 'data': None})
+            # 【生产改造 H5】错误脱敏:详细 traceback 入日志,客户端只收通用消息
+            if "正在关闭" in str(e):
+                self._json(503, {'code': 503, 'message': '服务正在关闭', 'data': None})
+            else:
+                logger.exception("unhandled error in _handle_request (path=%s, client=%s)",
+                                 self.path, self.address_string())
+                self._json(500, {'code': 500, 'message': '内部错误,请稍后重试', 'data': None})
         finally:
             if tmp_path and os.path.exists(tmp_path): os.unlink(tmp_path)
 
@@ -492,8 +511,20 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif self.path in ['/funasr/health', '/ocr/health']:
-            # /health 不加认证(K8s readiness/liveness probe 需要直接访问)
-            self._json(200, {'code': 200, 'status': 'ok'})
+            # 【生产改造 H1】健康检查真实化:必须至少 1 个 idle worker 才 200
+            # 用于 K8s readiness probe,避免流量进入还没就绪的池子
+            model = 'asr' if 'funasr' in self.path else 'ocr'
+            pool = pools.get(model)
+            if pool is None:
+                self._json(503, {'code': 503, 'status': 'pool_not_initialized', 'data': None}); return
+            s = pool.stats()
+            if s['alive'] == 0 or s['idle'] == 0:
+                self._json(503, {'code': 503, 'status': 'not_ready',
+                                 'message': 'no idle workers', 'stats': s}); return
+            self._json(200, {'code': 200, 'status': 'ok', 'stats': s})
+        elif self.path == '/livez':
+            # 【生产改造 H1】/livez 永远 200,给 K8s liveness probe 用(避免重启风暴)
+            self._json(200, {'code': 200, 'status': 'alive'})
         else:
             self._json(405, {'code': 405, 'message': '仅支持 POST 或 /metrics /health', 'data': None})
 
