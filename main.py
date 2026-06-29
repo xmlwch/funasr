@@ -1,7 +1,5 @@
 import os
 import sys
-import ipaddress
-import socket
 import hmac
 import logging
 import json
@@ -165,78 +163,20 @@ def preflight_check_models(pools: dict):
                 )
 
 
-def _is_safe_url(url: str) -> bool:
-    """【生产改造 C3】SSRF 防御:拒绝指向内网/metadata 的 URL
-    - scheme 仅允许 http/https
-    - getaddrinfo 解析所有 IP,任意一个在内网段就拒
-    - 常见 metadata 主机名黑名单
+# 【L1 拆分】安全相关 helper 已独立到 security.py(SSRF / 路径白名单 / download_http_file)
+from security import (  # noqa: E402,F401  (从 security 透传)
+    _is_safe_url,
+    _is_safe_path,
+    download_http_file,
+)
+
+
+def preflight_check_models(pools: dict):
+    """启动前校验每个池需要的模型文件/目录,缺则 raise FileNotFoundError。
+
+    这样在 worker 反复 init 失败 300s 超时之前就 fail-fast,
+    错误信息直接告诉用户缺什么、放在哪、怎么覆盖路径。
     """
-    try:
-        p = urlparse(url)
-        if p.scheme not in ('http', 'https'):
-            return False
-        host = p.hostname
-        if not host:
-            return False
-        try:
-            infos = socket.getaddrinfo(host, None)
-        except socket.gaierror:
-            return False
-        for info in set(infos):
-            ip_str = info[4][0]
-            ip = ipaddress.ip_address(ip_str)
-            if (ip.is_private or ip.is_loopback or ip.is_link_local
-                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-                return False
-        if host.lower() in {'metadata.google.internal', 'metadata',
-                            'kubernetes.default.svc', 'localhost'}:
-            return False
-        return True
-    except Exception:
-        return False
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """【生产改造 C3】禁止 HTTP 30x 重定向,防 30x 跳到内网绕开 SSRF 防护"""
-    def http_error_301(self, req, fp, code, msg, headers): self._block(headers)
-    def http_error_302(self, req, fp, code, msg, headers): self._block(headers)
-    def http_error_303(self, req, fp, code, msg, headers): self._block(headers)
-    def http_error_307(self, req, fp, code, msg, headers): self._block(headers)
-    def http_error_308(self, req, fp, code, msg, headers): self._block(headers)
-    def _block(self, headers):
-        raise ValueError(f"HTTP redirect not allowed: {headers.get('Location')}")
-
-
-def _is_safe_path(filepath: str, allowed_dirs: list) -> str:
-    """【生产改造 C4】路径白名单防御:
-    - os.path.realpath 解析符号链接和 ..
-    - 必须在 allowed_dirs 列表内的某个目录下(允许该目录本身或其子文件)
-    - 返回规范化后的绝对路径
-    """
-    real = os.path.realpath(filepath)
-    for allowed in allowed_dirs:
-        if real == allowed or real.startswith(allowed + os.sep):
-            return real
-    raise ValueError(f"Path not allowed (不在白名单目录): {filepath}")
-
-
-def download_http_file(url: str, suffix: str) -> str:
-    if not _is_safe_url(url):
-        raise ValueError(f"URL not allowed: {url}")
-    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-    os.close(fd)
-    try:
-        # 用自定义 opener(带 NoRedirect)+ 全局安装,避免污染其他 URL 调用
-        opener = urllib.request.build_opener(_NoRedirect())
-        with opener.open(url, timeout=DOWNLOAD_TIMEOUT) as resp:
-            content_length = resp.headers.get('Content-Length')
-            if content_length and int(content_length) > MAX_CONTENT_LENGTH:
-                os.unlink(tmp_path); raise ValueError("文件大小超过限制")
-            with open(tmp_path, "wb") as f: shutil.copyfileobj(resp, f)
-        return tmp_path
-    except Exception:
-        if os.path.exists(tmp_path): os.unlink(tmp_path)
-        raise
 
 class Handler(BaseHTTPRequestHandler):
     request_queue_size = HTTP_REQUEST_QUEUE_SIZE
