@@ -1,10 +1,7 @@
 import os
 import sys
-import hmac
 import logging
 import json
-import time
-import shutil
 import argparse
 import tempfile
 import threading
@@ -12,7 +9,6 @@ import urllib.request
 import multiprocessing as mp
 import warnings
 import signal
-from urllib.parse import urlparse
 
 # 【生产改造 M1】结构化 logging — 全代码统一 logger
 logging.basicConfig(
@@ -88,9 +84,6 @@ if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
             prepend_env('LD_LIBRARY_PATH', str(_pp))
 
 # ================= 生产环境配置 =================
-MAX_CONTENT_LENGTH = 100 * 1024 * 1024
-INFERENCE_TIMEOUT = 300
-DOWNLOAD_TIMEOUT = 60
 IDLE_TIMEOUT = 300
 
 # 【生产改造 C4】路径白名单:默认仅允许上传目录 + 系统临时目录
@@ -101,34 +94,25 @@ ALLOWED_INPUT_DIRS_DEFAULT = ','.join([
 ])
 
 # 【生产改造 M2】魔法数字提取 — 集中管理便于调优
-# 仅保留 main / handler / security 用的常量;pool 自身的常量已移到 pool.py
+# 仅 main __main__ 用的常量;handler / security / pool 的常量已下放到各自模块
 WORKER_QUEUE_GET_TIMEOUT = 5.0    # worker 进程 task_queue.get 超时(秒)
-HTTP_REQUEST_QUEUE_SIZE = 128     # ThreadingHTTPServer 排队连接数
 PREWARN_HEAVY_THRESHOLD = 8       # 预热 worker 数超过此值触发内存/启动时间警告
 PREWARM_DEFAULT = 4               # -prewarm 默认值
 
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer
 from concurrent.futures import ThreadPoolExecutor
 
-
-# 支持的文件后缀
-AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.opus', '.ape', '.ac3'}
-IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp', '.tif', '.jfif'}
-
-# 路由表:HTTP path 前缀 → 模型类型。__main__ 会按 model_type 找到对应池。
-ROUTES = {
-    '/funasr/identify': 'asr',
-    '/ocr/identify': 'ocr',
-}
-# 池注册表:model_type → ElasticProcessPool。__main__ 启动时填充。
-pools: dict = {}
-
-# 【生产改造 C4】路径白名单:__main__ 启动前展开为绝对路径列表
-# 改动后会写入,_handle_request 期间只读
-_ALLOWED_DIRS = []  # type: list
-
+# 【L1 拆分】Handler / 路由 / 共享状态 / 文件类型 已独立到 handler.py
+from handler import (  # noqa: E402,F401
+    Handler,
+    ROUTES,
+    AUDIO_EXTS,
+    IMAGE_EXTS,
+    pools,
+    _ALLOWED_DIRS,
+)
 # 【L1 拆分】ElasticProcessPool 已独立到 pool.py
-from pool import ElasticProcessPool  # noqa: F401  (暴露给 __main__ 与外部)
+from pool import ElasticProcessPool  # noqa: E402,F401
 
 # ================= 辅助函数与 HTTP 服务器 =================
 def preflight_check_models(pools: dict):
@@ -170,151 +154,6 @@ from security import (  # noqa: E402,F401  (从 security 透传)
     download_http_file,
 )
 
-
-def preflight_check_models(pools: dict):
-    """启动前校验每个池需要的模型文件/目录,缺则 raise FileNotFoundError。
-
-    这样在 worker 反复 init 失败 300s 超时之前就 fail-fast,
-    错误信息直接告诉用户缺什么、放在哪、怎么覆盖路径。
-    """
-
-class Handler(BaseHTTPRequestHandler):
-    request_queue_size = HTTP_REQUEST_QUEUE_SIZE
-    # 【生产改造 C1】API Key 认证:__main__ 启动时注入
-    _api_key = None  # type: str | None
-
-    def _check_auth(self) -> bool:
-        """【生产改造 C1】校验 X-API-Key Header
-        未设置 _api_key → 不校验(开发模式,与默认 127.0.0.1 host 形成双重防御)
-        已设置 → 必须 Header 带正确密钥,hmac.compare_digest 防时序攻击
-        """
-        if not Handler._api_key:
-            return True
-        return hmac.compare_digest(
-            self.headers.get('X-API-Key', ''), Handler._api_key)
-
-    def do_POST(self):
-        # 【生产改造 C1】POST 入口先认证
-        if not self._check_auth():
-            self.send_response(401)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('WWW-Authenticate', 'X-API-Key')
-            self.end_headers()
-            self.wfile.write(json.dumps({'code': 401, 'message': 'Unauthorized', 'data': None},
-                                        ensure_ascii=False).encode('utf-8'))
-            return
-        model_type = ROUTES.get(self.path)
-        if model_type is None:
-            self._json(404, {'code': 404, 'message': '未找到路由', 'data': None})
-            return
-        target_pool = pools.get(model_type)
-        if target_pool is None:
-            self._json(503, {'code': 503, 'message': f'{model_type.upper()} 池未初始化', 'data': None})
-            return
-        self._handle_request(model_type, target_pool)
-
-    def _handle_request(self, service_type, target_pool):
-        # 【生产改造】拒绝条件收窄:只在"完全无可用 worker"时才拒
-        # busy 不再是拒绝理由 — busy 时请求进 submit() 排队 + 触发主动扩容
-        s = target_pool.stats()
-        if s['alive'] == 0 or s['alive'] == s['dead']:
-            self._json(503, {'code': 503, 'message': '服务正在启动/无可用 worker，请稍后重试', 'data': None})
-            return
-
-        tmp_path = None
-        try:
-            start_time = time.time()
-            length = int(self.headers.get('Content-Length', 0))
-            if length > MAX_CONTENT_LENGTH:
-                self._json(413, {'code': 413, 'message': '请求体过大', 'data': None}); return
-
-            body = json.loads(self.rfile.read(length).decode('utf-8'))
-            filepath = body.get('filepath')
-            if not filepath:
-                self._json(400, {'code': 400, 'message': '缺少 filepath 参数', 'data': None}); return
-
-            # 验证文件后缀
-            ext = os.path.splitext(filepath)[1].lower()
-            if service_type == 'asr' and ext not in AUDIO_EXTS:
-                self._json(400, {'code': 400, 'message': f'ASR 端点不支持文件类型: {ext}，支持的格式: {", ".join(sorted(AUDIO_EXTS))}', 'data': None}); return
-            if service_type == 'ocr' and ext not in IMAGE_EXTS:
-                self._json(400, {'code': 400, 'message': f'OCR 端点不支持文件类型: {ext}，支持的格式: {", ".join(sorted(IMAGE_EXTS))}', 'data': None}); return
-
-            if filepath.startswith(("http://", "https://")):
-                suffix = "_audio" if service_type == "asr" else "_image"
-                tmp_path = download_http_file(filepath, suffix)
-                real_path = tmp_path
-            else:
-                # 【生产改造 C4】路径白名单校验,防任意文件读取
-                real_path = _is_safe_path(filepath, _ALLOWED_DIRS)
-                if os.path.getsize(real_path) > MAX_CONTENT_LENGTH:
-                    raise ValueError("文件大小超过限制")
-
-            text = target_pool.submit(service_type, real_path)
-            duration = time.time() - start_time
-            self._json(200, {'code': 200, 'message': '识别成功', 'data': text, 'duration': round(duration, 3)})
-
-        except TimeoutError:
-            self._json(408, {'code': 408, 'message': '推理超时', 'data': None})
-        except (ValueError, FileNotFoundError) as e:
-            # 校验类错误信息对用户调试有用(已被 _is_safe_path 等过滤),但同时记日志
-            logger.warning("client error (path=%s): %s", self.path, e)
-            self._json(400, {'code': 400, 'message': str(e), 'data': None})
-        except Exception as e:
-            # 【生产改造 H5】错误脱敏:详细 traceback 入日志,客户端只收通用消息
-            if "正在关闭" in str(e):
-                self._json(503, {'code': 503, 'message': '服务正在关闭', 'data': None})
-            else:
-                logger.exception("unhandled error in _handle_request (path=%s, client=%s)",
-                                 self.path, self.address_string())
-                self._json(500, {'code': 500, 'message': '内部错误,请稍后重试', 'data': None})
-        finally:
-            if tmp_path and os.path.exists(tmp_path): os.unlink(tmp_path)
-
-    def do_GET(self):
-        # 【生产改造 C1】/metrics 走认证(防暴露池容量给侦察)
-        if self.path == '/metrics':
-            if not self._check_auth():
-                self._json(401, {'code': 401, 'message': 'Unauthorized', 'data': None}); return
-            # Prometheus 文本格式 — 每池一行,带 model 标签
-            lines = []
-            for pool in pools.values():
-                s = pool.stats()
-                model = s['model_type']
-                for key in ('alive', 'max', 'min', 'in_flight', 'idle', 'busy', 'loading', 'dead', 'scale_events'):
-                    lines.append(f'funasr_pool_{key}{{model="{model}"}} {s[key]}')
-            body = ('\n'.join(lines) + '\n').encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(body)
-        elif self.path in ['/funasr/health', '/ocr/health']:
-            # 【生产改造 H1】健康检查真实化:必须至少 1 个 idle worker 才 200
-            # 用于 K8s readiness probe,避免流量进入还没就绪的池子
-            model = 'asr' if 'funasr' in self.path else 'ocr'
-            pool = pools.get(model)
-            if pool is None:
-                self._json(503, {'code': 503, 'status': 'pool_not_initialized', 'data': None}); return
-            s = pool.stats()
-            if s['alive'] == 0 or s['idle'] == 0:
-                self._json(503, {'code': 503, 'status': 'not_ready',
-                                 'message': 'no idle workers', 'stats': s}); return
-            self._json(200, {'code': 200, 'status': 'ok', 'stats': s})
-        elif self.path == '/livez':
-            # 【生产改造 H1】/livez 永远 200,给 K8s liveness probe 用(避免重启风暴)
-            self._json(200, {'code': 200, 'status': 'alive'})
-        else:
-            self._json(405, {'code': 405, 'message': '仅支持 POST 或 /metrics /health', 'data': None})
-
-    def _json(self, status, data):
-        body = json.dumps(data, ensure_ascii=False).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format, *args):
-        logger.info("%s - %s", self.address_string(), format % args)
 
 
 if __name__ == '__main__':
