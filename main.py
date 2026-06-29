@@ -286,7 +286,7 @@ if __name__ == '__main__':
     # 【生产改造 task39】解析 -allowed-internal-hosts,填 _ALLOWED_HOSTS
     # 默认空 = 严格 SSRF,生产内网场景需显式开
     from security import _parse_trusted_hosts
-    parsed = _parse_trusted_hosts(args.allow_internal_hosts)
+    parsed = _parse_trusted_hosts(args.allowed_internal_hosts)
     _ALLOWED_HOSTS['hostnames'] = parsed['hostnames']
     _ALLOWED_HOSTS['ip_literals'] = parsed['ip_literals']
     _ALLOWED_HOSTS['cidrs'] = parsed['cidrs']
