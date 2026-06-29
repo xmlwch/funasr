@@ -49,8 +49,7 @@ RUN mkdir -p /build/bin && \
 # 把源码 + 依赖清单先 COPY — 依赖装好后改源码会复用 pip 缓存层
 # 注意:L1 拆分后,main.py 依赖 pool.py / handler.py / security.py,缺一不可
 COPY requirements.txt ./
-COPY main.py worker.py _paths.py ./
-COPY pool.py security.py handler.py ./
+COPY main.py worker.py _paths.py pool.py security.py handler.py ./
 COPY funasr.spec ./
 
 # ----------------------------------------------------------------
