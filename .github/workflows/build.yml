@@ -29,6 +29,8 @@ jobs:
           pytest tests/ -v --tb=short --cov=main --cov-report=term-missing
 
   linux:
+    # 【优化】只在 tag 触发 linux 构建 — main 分支 push 只跑 test
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       matrix:
         include:
@@ -57,6 +59,8 @@ jobs:
           path: funasr-${{ matrix.name }}
 
   windows:
+    # 【优化】只在 tag 触发 windows 构建
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-2022
 
     steps:
