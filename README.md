@@ -125,6 +125,7 @@ funasr-windows-x86_64.exe -port 5001
 | `-api-key` | `None` | API 密钥(启用后客户端需带 `X-API-Key` Header) |
 | `-api-key-env` | `None` | 从环境变量读 API 密钥(避免 ps 暴露) |
 | `-allowed-dirs` | `~/uploads,/tmp` | 路径白名单,支持 ~、`$VAR`、glob(`*`/`?`/`**`) |
+| `-allowed-internal-hosts` | `127.0.0.1,localhost,::1` | URL 白名单绕过 SSRF,详见下文 |
 
 ### CLI 调用
 
@@ -231,6 +232,42 @@ export FUNASR_API_KEY=$(openssl rand -hex 32)
 
 客户端必须带 `X-API-Key` Header,否则 401(POST 端点),`/metrics` 也需认证。
 `/livez` 与 `/health` 永不认证(K8s 探针要求)。
+
+### URL 白名单 `-allowed-internal-hosts`(SSRF bypass)
+
+请求体里的 `filepath` 可以是 HTTP(S) URL,默认会被 SSRF 防御拒绝指向内网/metadata 的 URL。
+
+**默认**:`127.0.0.1,localhost,::1` — 同机 HTTP 服务开箱即用(IPv4 + IPv6 localhost)。
+
+**生产内网场景**:显式指定可信主机,绕开 SSRF IP 段检查。支持 3 种格式:
+
+```bash
+# 单个 IP
+./funasr -allowed-internal-hosts '192.168.1.100'
+
+# hostname 字面量
+./funasr -allowed-internal-hosts 'internal.api.local'
+
+# 整个 LAN 段(CIDR)
+./funasr -allowed-internal-hosts '192.168.0.0/16'
+
+# IPv6 段
+./funasr -allowed-internal-hosts '::1/128,fe80::/10'
+
+# 混合:IPv4 + IPv6 + hostname + CIDR
+./funasr -allowed-internal-hosts '127.0.0.1,::1,localhost,internal.api.local,10.0.0.0/8,192.168.0.0/16'
+
+# 多段(企业各网段)
+./funasr -allowed-internal-hosts '192.168.0.0/16,10.0.0.0/8,172.16.0.0/12'
+```
+
+**安全护栏**:
+- 信任列表命中 → 跳过 IP 段黑名单(loopback / private / link-local / reserved / multicast)
+- **但** `metadata.google.internal` / `metadata` / `kubernetes.default.svc` 等**永远拒**(hard blacklist,信任列表也无法 bypass)
+- 可信项必须可被 `ipaddress` 解析;无效 CIDR 会被 logger.warning + skip
+- 至少一项需是合法的 hostname / IP / CIDR,否则该项被丢弃(不进 trust set)
+
+**生产推荐**:**不要**用 `0.0.0.0/0`(那等于禁 SSRF)— 精确到企业实际网段。
 
 ## 限制
 
