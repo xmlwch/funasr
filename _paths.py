@@ -26,10 +26,9 @@ def get_exe_dir():
 
 
 def setup_bundled_env():
-    """frozen 时把 _MEIPASS/bin 注入 PATH,让 ccache/torchaudio 找到 ffmpeg 等可执行文件。
-
-    注:故意不注入 LD_LIBRARY_PATH(同名 .so 会被误加载)和 TORCHAUDIO_USE_FFMPEG_PATH
-    (2.x 已不再需要,见 funasr spec 注释)。
+    """frozen 时把 _MEIPASS/bin 注入 PATH,把 _MEIPASS/lib 注入 LD_LIBRARY_PATH,
+    并设 TORCHAUDIO_USE_FFMPEG_PATH 等环境变量,让 torchaudio 2.x / pydub
+    / ffmpeg-python 等库能找到 ffmpeg(bin)和 libav*.so(lib)。
 
     main.py 和 worker.py 都需要调用 — worker 是独立 Python 进程,
     不会执行 main.py 的模块级代码,必须自己设。
@@ -38,8 +37,9 @@ def setup_bundled_env():
         return
     pkg = get_pkg_dir()
     bin_dir = os.path.join(pkg, 'bin')
+    lib_dir = os.path.join(pkg, 'lib')
 
-    # PATH 前置 — 给 subprocess / shutil.which 找 ccache 等可执行文件
+    # 1) PATH 前置 — 给 subprocess / shutil.which 找 ccache 等可执行文件
     if os.path.isdir(bin_dir):
         os.environ['PATH'] = bin_dir + os.pathsep + os.environ.get('PATH', '')
 

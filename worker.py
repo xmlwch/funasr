@@ -18,18 +18,6 @@ worker_logger = logging.getLogger(f'funasr.worker.{os.getpid()}')
 # 【生产改造 M2】worker 队列 get 超时(秒),保持与 main.py 同步调优
 WORKER_QUEUE_GET_TIMEOUT = 5.0
 
-# 【生产改造 M6】PaddlePaddle Windows 上的 IR 优化会让 PaddleOCR 启动崩溃
-# 提到模块顶层,每个 worker 进程 import 时只 patch 一次(原在 init_worker_processes 内每次加载都重写)
-# 关键:main 进程的 patch 不会跨 spawn 边界继承给 worker,所以必须在 worker.py 顶层每个进程都做
-if sys.platform == 'win32':
-    try:
-        import paddle.inference
-        _orig_switch_ir_optim = paddle.inference.Config.switch_ir_optim
-        paddle.inference.Config.switch_ir_optim = lambda self, enable: _orig_switch_ir_optim(self, False)
-    except (ImportError, AttributeError):
-        pass  # paddle 未安装或版本变化,无影响
-
-
 # ================= 子进程全局变量 =================
 _asr_model = None
 _ocr_engine = None
@@ -50,8 +38,18 @@ def init_worker_processes(model_type: str):
         _asr_model = SenseVoiceSmall(model_dir, batch_size=1, quantize=True, intra_op_num_threads=1)
         worker_logger.info("[Worker %d] ✓ ASR 模型加载完成", pid)
     elif model_type == 'ocr':
-        # 【生产改造 M6】PaddlePaddle Windows IR 优化 monkey patch 已移至 worker.py 顶层
-        # 此处不再重复 patch
+        # 【生产改造 M6】Windows 上 PaddlePaddle 默认 IR 优化会导致 PaddleOCR 启动崩溃
+        # 必须放在 import paddleocr 之前(且 ASR worker 不应触发此处)
+        # 关键:此 patch 不能放 worker.py 模块顶层,会 import paddle.inference 干扰
+        #       torch 的 shm.dll 加载顺序,导致 ASR 加载失败。这就是为什么 v0.9.2 之后
+        #       把 patch 放回函数内(原位)。
+        if sys.platform == 'win32':
+            try:
+                import paddle.inference
+                _orig_switch_ir_optim = paddle.inference.Config.switch_ir_optim
+                paddle.inference.Config.switch_ir_optim = lambda self, enable: _orig_switch_ir_optim(self, False)
+            except (ImportError, AttributeError):
+                pass  # paddle 未安装或版本变化,无影响
 
         from paddleocr import PaddleOCR
         ocr_model_dir = os.environ.get("FUNASR_OCR_MODEL_DIR", os.path.join(BASE_DIR, "model", "paddleocr"))
