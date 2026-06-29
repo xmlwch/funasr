@@ -113,6 +113,18 @@ funasr-windows-x86_64.exe -port 5001
 |------|--------|------|
 | `-host` | `127.0.0.1` | 绑定 IP，`0.0.0.0` 允许外部访问 |
 | `-port` | `5001` | 监听端口 |
+| `-workers` | `16` | 每池最大 worker 数 |
+| `-asr-workers` / `-ocr-workers` | 同 `-workers` | per-pool 覆盖 |
+| `-prewarm` | `4` | 启动时预热 worker 数 |
+| `-asr-prewarm` / `-ocr-prewarm` | 同 `-prewarm` | per-pool 覆盖 |
+| `-min-workers` | `1` | 空闲后最少保留 worker(防冷启动) |
+| `-asr-min-workers` / `-ocr-min-workers` | 同 `-min-workers` | per-pool 覆盖 |
+| `-max-queue` | `200` | 队列上限,超过返 503 |
+| `-asr-max-queue` / `-ocr-max-queue` | 同 `-max-queue` | per-pool 覆盖 |
+| `-idle` | `300` | 空闲超时后缩容(秒) |
+| `-api-key` | `None` | API 密钥(启用后客户端需带 `X-API-Key` Header) |
+| `-api-key-env` | `None` | 从环境变量读 API 密钥(避免 ps 暴露) |
+| `-allowed-dirs` | `~/uploads,/tmp` | 路径白名单,支持 ~、`$VAR`、glob(`*`/`?`/`**`) |
 
 ### CLI 调用
 
@@ -167,12 +179,58 @@ curl -X POST http://127.0.0.1:5001/ocr/identify \
 ### 健康检查
 
 ```bash
-# ASR 健康检查
+# ASR 健康检查(返回 503 当 ASR 池无 idle worker)
 curl http://127.0.0.1:5001/funasr/health
+# → 200 {"code":200,"status":"ok","stats":{...}} 或
+# → 503 {"code":503,"status":"not_ready","message":"no idle workers","stats":{...}}
 
 # OCR 健康检查
 curl http://127.0.0.1:5001/ocr/health
+
+# 进程活性探针(永远 200,用于 K8s liveness)
+curl http://127.0.0.1:5001/livez
+
+# Prometheus 指标(需 X-API-Key)
+curl -H "X-API-Key: your-key" http://127.0.0.1:5001/metrics
 ```
+
+### 路径白名单 `-allowed-dirs`
+
+接受逗号分隔路径,支持 `~` 展开、环境变量、glob 通配:
+
+```bash
+# 字面路径
+./funasr -allowed-dirs '~/uploads,/tmp'
+
+# 环境变量
+DATA_ROOT=/data ./funasr -allowed-dirs '$DATA_ROOT/incoming'
+
+# 单层通配:~/uploads/2024-Q1, 2024-Q2 ...
+./funasr -allowed-dirs '~/uploads/2024-*'
+
+# 递归通配:~/uploads 全部后代
+./funasr -allowed-dirs '~/uploads/**'
+
+# 混合(逗号分隔)
+./funasr -allowed-dirs '~/uploads,/tmp,$DATA_ROOT/shared,~/uploads/2024-*/incoming'
+```
+
+路径白名单防任意文件读取:用户请求的路径 `realpath` 后必须匹配其中某条。
+展开 `*`/`**` 默认最多 1000 个,超过报错(防 DoS)。
+
+### API Key 认证
+
+未设 `-api-key` / `-api-key-env` 时**不强制**(开发模式,127.0.0.1 双重防御)。
+生产部署建议:
+
+```bash
+# 推荐:从环境变量注入,避免 ps 暴露
+export FUNASR_API_KEY=$(openssl rand -hex 32)
+./funasr -host 0.0.0.0 -api-key-env FUNASR_API_KEY
+```
+
+客户端必须带 `X-API-Key` Header,否则 401(POST 端点),`/metrics` 也需认证。
+`/livez` 与 `/health` 永不认证(K8s 探针要求)。
 
 ## 限制
 

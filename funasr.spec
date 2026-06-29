@@ -67,25 +67,28 @@ hiddenimports += [
     'paddle.fluid', 'paddle.nn', 'paddle.tensor',
     'paddle.optimizer', 'more_itertools',
     
-    # 【关键新增】：强制打包我们拆分出来的 worker 模块！
-    # 这是解决 PyInstaller 多进程 AttributeError 和 ModuleNotFoundError 的核心
-    'worker'
+    # 【关键】强制打包拆分出去的模块 — 防止 PyInstaller 静态分析遗漏
+    # 这些是 L1 拆分后独立出去的模块,必须显式声明
+    'worker',
+    'pool',         # ElasticProcessPool + get_shared_manager
+    'security',     # _is_safe_url, _NoRedirect, _is_safe_path, download_http_file
+    'handler',      # Handler + ROUTES + pools/_ALLOWED_DIRS
 ]
 
 a = Analysis(
     ['main.py'],
-    pathex=[SPEC_DIR],  # 确保 PyInstaller 能在 SPEC 同级目录找到 worker.py
+    pathex=[SPEC_DIR],  # 确保 PyInstaller 能在 SPEC 同级目录找到 worker.py / pool.py / handler.py / security.py
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    
+
     # 【关键修改】：清空自定义 runtime_hooks。
     # 采用拆分 worker.py 的标准方案后，PyInstaller 内置的多进程支持已足够，
     # 且我们在 main.py 中显式调用了 mp.freeze_support()，移除自定义 hook 可避免冲突。
-    runtime_hooks=[], 
-    
+    runtime_hooks=[],
+
     excludes=[
         'torch.tests', 'torch.testing', 'torch.utils.tensorboard',
         'torch.utils.bottleneck', 'torch.utils.flopcounter',
