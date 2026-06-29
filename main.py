@@ -19,13 +19,13 @@ import warnings
 import signal
 from urllib.parse import urlparse
 
-# 【生产改造 H5】结构化 logging(暂时最小化,M1 批会扩展)
+# 【生产改造 M1】结构化 logging — 全代码统一 logger
 logging.basicConfig(
     level=os.environ.get('FUNASR_LOG_LEVEL', 'INFO'),
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     datefmt='%Y-%m-%dT%H:%M:%S',
 )
-logger = logging.getLogger('funasr.handler')
+logger = logging.getLogger('funasr')
 
 # ================= 基础环境与警告屏蔽 =================
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -104,12 +104,22 @@ INFERENCE_TIMEOUT = 300
 DOWNLOAD_TIMEOUT = 60
 IDLE_TIMEOUT = 300
 
-# 【生产改造】C4 路径白名单:默认仅允许上传目录 + 系统临时目录
+# 【生产改造 C4】路径白名单:默认仅允许上传目录 + 系统临时目录
 # 部署时务必通过 -allowed-dirs 覆盖为真实业务目录,例如 /data/uploads
 ALLOWED_INPUT_DIRS_DEFAULT = ','.join([
     os.path.expanduser('~/uploads'),
     tempfile.gettempdir(),
 ])
+
+# 【生产改造 M2】魔法数字提取 — 集中管理便于调优
+WORKER_QUEUE_GET_TIMEOUT = 5.0    # worker 进程 task_queue.get 超时(秒)
+MONITOR_INTERVAL = 10             # _monitor_workers 扫描间隔(秒)
+POLL_INTERVAL = 0.05              # submit 轮询 results 间隔(秒)
+HTTP_REQUEST_QUEUE_SIZE = 128     # ThreadingHTTPServer 排队连接数
+WAIT_READY_TIMEOUT = 60           # 预热等待就绪超时(秒)
+STATS_CACHE_TTL = 1.0             # /metrics stats() 本地缓存(秒)
+PREWARN_HEAVY_THRESHOLD = 8       # 预热 worker 数超过此值触发内存/启动时间警告
+PREWARM_DEFAULT = 4               # -prewarm 默认值
 
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor
@@ -175,19 +185,20 @@ class ElasticProcessPool:
                        args=(self.task_queue, self.results, self.worker_state, 0, self.idle_timeout, self.model_type, self.min_workers))
         p.start()
         self.workers[p.pid] = p
-        print(f"[{self.model_type.upper()} Pool] 启动新 Worker (PID: {p.pid})，当前 {self.model_type} 池总数: {len(self.workers)}")
+        logger.info("[%s Pool] 启动新 Worker (PID: %d),当前 %s 池总数: %d",
+                    self.model_type.upper(), p.pid, self.model_type, len(self.workers))
 
-    def wait_ready(self, timeout=60):
+    def wait_ready(self, timeout=WAIT_READY_TIMEOUT):
         """轮询等待本池有 worker 进入 idle 状态(模型加载完成)"""
         name = self.model_type.upper()
         for i in range(timeout):
             time.sleep(1)
             if any(s.get('status') == 'idle' for s in self.worker_state.values()):
-                print(f"  ✓ {name} 池就绪")
+                logger.info("✓ %s 池就绪", name)
                 return True
             if i > 0 and i % 5 == 0:
-                print(f"  {name} 池: 已等待 {i} 秒...")
-        print(f"警告: {name} 池等待超时，模型可能加载失败！")
+                logger.info("%s 池: 已等待 %d 秒...", name, i)
+        logger.warning("%s 池等待超时,模型可能加载失败!", name)
         return False
 
     def submit(self, func_name, path):
@@ -228,7 +239,7 @@ class ElasticProcessPool:
                     return data
                 if time.time() - start_time > INFERENCE_TIMEOUT:
                     raise TimeoutError("推理超时")
-                time.sleep(0.05)  # 50ms 轮询,既不浪费 CPU 也不让用户等太久
+                time.sleep(POLL_INTERVAL)  # 50ms 轮询,既不浪费 CPU 也不让用户等太久
         finally:
             # 【生产改造 H2】清理 results,worker 晚到写入也无所谓 — 下次 submit 也会清理
             # 防 TimeoutError 后 worker 仍写回结果造成的内存泄漏
@@ -263,16 +274,16 @@ class ElasticProcessPool:
 
     def shutdown(self):
         self.is_shutting_down = True
-        print("[Pool] 正在发送退出信号 (毒丸)...")
+        logger.info("[Pool] 正在发送退出信号 (毒丸)...")
         for _ in range(self.max_workers):
             self.task_queue.put(None)
 
-        print("[Pool] 等待 Worker 进程退出...")
+        logger.info("[Pool] 等待 Worker 进程退出...")
         with self.lock:
             for pid, p in list(self.workers.items()):
                 p.join(timeout=5)
                 if p.is_alive():
-                    print(f"[Pool] Worker (PID: {pid}) 未响应，强制终止。")
+                    logger.warning("[Pool] Worker (PID: %d) 未响应,强制终止", pid)
                     p.terminate()
                     p.join(timeout=2)
             self.workers.clear()
@@ -280,11 +291,11 @@ class ElasticProcessPool:
         # 不在池 shutdown 里关 Manager — Manager 是多池共享的,
         # 第一个池关掉 Manager 会让其他池的 worker 写 worker_state 失败。
         # 交给主进程退出时 OS 回收 Manager 子进程。
-        print("[Pool] 所有 Worker 已安全退出。")
+        logger.info("[Pool] 所有 Worker 已安全退出。")
 
     def _monitor_workers(self):
         while True:
-            time.sleep(10)
+            time.sleep(MONITOR_INTERVAL)
             with self.lock:
                 dead_pids = [pid for pid in self.workers if not self.workers[pid].is_alive()]
                 for pid in dead_pids:
@@ -401,7 +412,7 @@ def download_http_file(url: str, suffix: str) -> str:
         raise
 
 class Handler(BaseHTTPRequestHandler):
-    request_queue_size = 128
+    request_queue_size = HTTP_REQUEST_QUEUE_SIZE
     # 【生产改造 C1】API Key 认证:__main__ 启动时注入
     _api_key = None  # type: str | None
 
@@ -536,7 +547,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format, *args):
-        print("%s - %s" % (self.address_string(), format % args))
+        logger.info("%s - %s", self.address_string(), format % args)
 
 
 if __name__ == '__main__':
@@ -561,7 +572,7 @@ if __name__ == '__main__':
     parser.add_argument('-workers', type=int, default=16, help='ASR 与 OCR 池各自的最大 worker 数(默认 16);支持 -workers 20 提升到 20 并发')
     parser.add_argument('-asr-workers', type=int, default=None, help='ASR 池最大 worker 数；指定后覆盖 -workers')
     parser.add_argument('-ocr-workers', type=int, default=None, help='OCR 池最大 worker 数；指定后覆盖 -workers')
-    parser.add_argument('-prewarm', type=int, default=4, help='每池启动时预热的 worker 数(默认 4);设为 20 可全量预热但启动慢且内存高')
+    parser.add_argument('-prewarm', type=int, default=PREWARM_DEFAULT, help=f'每池启动时预热的 worker 数(默认 {PREWARM_DEFAULT});设为 20 可全量预热但启动慢且内存高')
     parser.add_argument('-asr-prewarm', type=int, default=None, help='ASR 池预热数;指定后覆盖 -prewarm')
     parser.add_argument('-ocr-prewarm', type=int, default=None, help='OCR 池预热数;指定后覆盖 -prewarm')
     parser.add_argument('-min-workers', type=int, default=1, help='空闲超时后最少保留多少 worker(默认 1);生产推荐设为 -prewarm 同值,避免突发流量冷启动')
@@ -614,9 +625,9 @@ if __name__ == '__main__':
         if result['code'] == 200: print(result['data'])
         else: print('错误: %s' % result['message'], file=sys.stderr)
     else:
-        print('=' * 60)
-        print('FunASR & PaddleOCR 弹性伸缩多进程服务 (ASR/OCR 分池)')
-        print('=' * 60)
+        logger.info("=" * 60)
+        logger.info("FunASR & PaddleOCR 弹性伸缩多进程服务 (ASR/OCR 分池)")
+        logger.info("=" * 60)
 
         # 【生产改造】per-pool 参数解析:优先 asr/ocr 独立值,缺省用全局值
         # 例: -prewarm 4 -asr-prewarm 8 → ASR 池预热 8,OCR 池预热 4
@@ -638,11 +649,12 @@ if __name__ == '__main__':
         # 【校验】min_workers 不能大于 max_workers,否则池永远不会缩容(逻辑死循环)
         for name, cfg in pool_cfg.items():
             if cfg['min_workers'] > cfg['max_workers']:
-                print(f"❌ {name.upper()} 池 min_workers({cfg['min_workers']}) > max_workers({cfg['max_workers']}),无解配置,退出",
-                      file=sys.stderr)
+                logger.error("❌ %s 池 min_workers(%d) > max_workers(%d),无解配置,退出",
+                             name.upper(), cfg['min_workers'], cfg['max_workers'])
                 sys.exit(1)
             if cfg['prewarm'] > cfg['max_workers']:
-                print(f"⚠️  {name.upper()} 池 prewarm({cfg['prewarm']}) > max_workers({cfg['max_workers']}),实际只预热 {cfg['max_workers']} 个")
+                logger.warning("⚠️  %s 池 prewarm(%d) > max_workers(%d),实际只预热 %d 个",
+                                name.upper(), cfg['prewarm'], cfg['max_workers'], cfg['max_workers'])
 
         # 用 pools 字典统一管理:加新模型只需在 ROUTES + 此处加一行
         pools.update({
@@ -661,28 +673,38 @@ if __name__ == '__main__':
         try:
             preflight_check_models(pools)
         except FileNotFoundError as e:
-            print(f"\n❌ {e}\n", file=sys.stderr)
+            logger.error("❌ %s", e)
             sys.exit(1)
 
-        # 【生产改造】按 per-pool prewarm 数预热(支持 ASR/OCR 各自不同)
+        # 【生产改造 M7】按 per-pool prewarm 数并行预热(支持 ASR/OCR 各自不同)
         # 每个 worker 进程加载 SenseVoiceSmall + PaddleOCR ≈ 1GB 内存
         total_prewarm = sum(cfg['prewarm'] for cfg in pool_cfg.values())
         est_mem_gb = total_prewarm * 1.0
         prewarm_detail = ' | '.join(
             f"{n.upper()} {cfg['prewarm']} 个" for n, cfg in pool_cfg.items()
         )
-        print(f"正在预热模型({prewarm_detail},合计 {total_prewarm} 个进程,约 {est_mem_gb:.0f}GB 内存)...")
-        if total_prewarm > 8:
-            print(f"⚠️  预热 {total_prewarm} 个 worker,启动时间 ≈ {total_prewarm * 10}s,需 {est_mem_gb:.0f}GB 内存")
-        for name, cfg in pool_cfg.items():
-            pool = pools[name]
-            for _ in range(cfg['prewarm']):
-                pool.start_worker()
+        logger.info("正在预热模型(%s,合计 %d 个进程,约 %.0fGB 内存)...",
+                    prewarm_detail, total_prewarm, est_mem_gb)
+        if total_prewarm > PREWARN_HEAVY_THRESHOLD:
+            logger.warning("⚠️  预热 %d 个 worker,启动时间 ≈ %ds,需 %.0fGB 内存",
+                           total_prewarm, total_prewarm * 10, est_mem_gb)
+        # 并行 spawn:Windows 上 mp.Process.start() 内部 CreateProcess 同步但很快(~100ms),
+        # 多 worker 并发比串行快 10x(prewarm=20 时 ~1s → ~100ms)
+        def _spawn_one(pool):
+            pool.start_worker()
+        with ThreadPoolExecutor(max_workers=total_prewarm) as ex:
+            futures = []
+            for name, cfg in pool_cfg.items():
+                pool = pools[name]
+                for _ in range(cfg['prewarm']):
+                    futures.append(ex.submit(_spawn_one, pool))
+            for f in futures:
+                f.result()
         with ThreadPoolExecutor(max_workers=len(pools)) as ex:
             futures = [ex.submit(pool.wait_ready) for pool in pools.values()]
             for f in futures:
                 f.result()
-        print("✓ 双池预热完成，可以接收请求！")
+        logger.info("✓ 双池预热完成,可以接收请求!")
 
         env_host = '127.0.0.1' if args.host == '0.0.0.0' else args.host
         with open(env_file, 'w') as f:
@@ -692,7 +714,7 @@ if __name__ == '__main__':
         server = ThreadingHTTPServer((args.host, args.port), Handler)
 
         def graceful_shutdown(signum, frame):
-            print('\n\n[Server] 收到退出信号，正在准备优雅关闭...')
+            logger.info("\n\n[Server] 收到退出信号,正在准备优雅关闭...")
             threading.Thread(target=server.shutdown, daemon=True).start()
 
         signal.signal(signal.SIGINT, graceful_shutdown)
@@ -703,16 +725,16 @@ if __name__ == '__main__':
             f"{p.model_type.upper()} 池 {p.min_workers}-{p.max_workers} 个 Worker(队列上限 {p.max_queue})"
             for p in pools.values()
         )
-        print(f'\n服务已启动: http://{args.host}:{args.port}')
-        print(f'弹性配置: {pool_lines} | 空闲 {args.idle}秒 后缩到最小保活')
-        print('提示: 支持 Ctrl+C 或 kill 命令优雅退出。按 Ctrl+C 停止服务\n')
+        logger.info("服务已启动: http://%s:%s", args.host, args.port)
+        logger.info("弹性配置: %s | 空闲 %d秒 后缩到最小保活", pool_lines, args.idle)
+        logger.info("提示: 支持 Ctrl+C 或 kill 命令优雅退出")
 
         try:
             server.serve_forever()
         finally:
-            print("[Server] 停止接收新请求，正在清理资源...")
+            logger.info("[Server] 停止接收新请求,正在清理资源...")
             server.server_close()
             for pool in pools.values():
                 pool.shutdown()
             if os.path.exists(env_file): os.unlink(env_file)
-            print("[Server] 服务已完全停止，所有资源已释放。")
+            logger.info("[Server] 服务已完全停止,所有资源已释放。")

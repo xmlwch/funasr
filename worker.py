@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import queue
+import logging
 
 # worker 用 get_exe_dir:模型文件是用户放在 exe 旁边的,不在 _MEIPASS
 # setup_bundled_env 把 _MEIPASS/bin 注入 PATH,让 torchaudio 在 worker 里
@@ -10,6 +11,23 @@ from _paths import get_exe_dir, setup_bundled_env
 
 BASE_DIR = get_exe_dir()
 setup_bundled_env()
+
+# 【生产改造 M1】worker 进程独立 logger,以 PID 区分多 worker 输出
+worker_logger = logging.getLogger(f'funasr.worker.{os.getpid()}')
+
+# 【生产改造 M2】worker 队列 get 超时(秒),保持与 main.py 同步调优
+WORKER_QUEUE_GET_TIMEOUT = 5.0
+
+# 【生产改造 M6】PaddlePaddle Windows 上的 IR 优化会让 PaddleOCR 启动崩溃
+# 提到模块顶层,每个 worker 进程 import 时只 patch 一次(原在 init_worker_processes 内每次加载都重写)
+# 关键:main 进程的 patch 不会跨 spawn 边界继承给 worker,所以必须在 worker.py 顶层每个进程都做
+if sys.platform == 'win32':
+    try:
+        import paddle.inference
+        _orig_switch_ir_optim = paddle.inference.Config.switch_ir_optim
+        paddle.inference.Config.switch_ir_optim = lambda self, enable: _orig_switch_ir_optim(self, False)
+    except (ImportError, AttributeError):
+        pass  # paddle 未安装或版本变化,无影响
 
 
 # ================= 子进程全局变量 =================
@@ -24,21 +42,16 @@ def init_worker_processes(model_type: str):
     global _asr_model, _ocr_engine
     pid = os.getpid()
     model_type = model_type.lower()
-    print(f"[Worker {pid}] 正在加载 {model_type.upper()} 模型...")
+    worker_logger.info("[Worker %d] 正在加载 %s 模型...", pid, model_type.upper())
 
     if model_type == 'asr':
         from funasr_onnx import SenseVoiceSmall
         model_dir = os.environ.get("FUNASR_MODEL_DIR", os.path.join(BASE_DIR, "model"))
         _asr_model = SenseVoiceSmall(model_dir, batch_size=1, quantize=True, intra_op_num_threads=1)
-        print(f"[Worker {pid}] ✓ ASR 模型加载完成")
+        worker_logger.info("[Worker %d] ✓ ASR 模型加载完成", pid)
     elif model_type == 'ocr':
-        # 【核心修复】：在 Windows 下，使用 Monkey Patch 强制关闭底层的 IR 优化
-        if sys.platform == 'win32':
-            import paddle.inference
-            original_switch_ir_optim = paddle.inference.Config.switch_ir_optim
-            def fake_switch_ir_optim(self, enable):
-                return original_switch_ir_optim(self, False)
-            paddle.inference.Config.switch_ir_optim = fake_switch_ir_optim
+        # 【生产改造 M6】PaddlePaddle Windows IR 优化 monkey patch 已移至 worker.py 顶层
+        # 此处不再重复 patch
 
         from paddleocr import PaddleOCR
         ocr_model_dir = os.environ.get("FUNASR_OCR_MODEL_DIR", os.path.join(BASE_DIR, "model", "paddleocr"))
@@ -52,7 +65,8 @@ def init_worker_processes(model_type: str):
             show_log=False, use_onnx=False,
             enable_mkldnn=not is_win, cpu_threads=1
         )
-        print(f"[Worker {pid}] ✓ OCR 模型加载完成 (OneDNN: {'OFF' if is_win else 'ON'})")
+        worker_logger.info("[Worker %d] ✓ OCR 模型加载完成 (OneDNN: %s)",
+                           pid, 'OFF' if is_win else 'ON')
     else:
         raise ValueError(f"未知的 model_type: {model_type!r}（应为 'asr' 或 'ocr'）")
 
@@ -103,13 +117,13 @@ def elastic_worker_loop(task_queue, results, worker_state, pid_placeholder, idle
         init_worker_processes(model_type)
         worker_state[real_pid] = {'status': 'idle', 'last_active': time.time()}
     except Exception as e:
-        print(f"[Worker {real_pid}] 模型加载失败: {e}")
+        worker_logger.error("[Worker %d] 模型加载失败: %s", real_pid, e)
         worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
         return  # 直接退出，让主进程的监控线程去清理
 
     while True:
         try:
-            task = task_queue.get(timeout=5.0)
+            task = task_queue.get(timeout=WORKER_QUEUE_GET_TIMEOUT)
         except queue.Empty:
             state = worker_state.get(real_pid)
             if state and (time.time() - state['last_active'] > idle_timeout):
@@ -120,17 +134,17 @@ def elastic_worker_loop(task_queue, results, worker_state, pid_placeholder, idle
                     # 【注意】"至少保留 1 个 alive"是 best-effort:两个 worker 几乎同时
                     # 走到这里时都可能看到 alive_count>1 而双双退出。系统会自愈
                     # (下一个 submit 看到 alive_pids 为空,触发 start_worker)。
-                    print(f"[Worker {real_pid}] 空闲超时，主动退出以释放资源。")
+                    worker_logger.info("[Worker %d] 空闲超时,主动退出以释放资源。", real_pid)
                     worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
                     break
             continue
         except KeyboardInterrupt:
-            print(f"[Worker {real_pid}] 收到 Ctrl+C 信号，正在优雅退出...")
+            worker_logger.info("[Worker %d] 收到 Ctrl+C 信号,正在优雅退出...", real_pid)
             worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
             break
 
         if task is None:
-            print(f"[Worker {real_pid}] 收到退出信号 (毒丸)，正在优雅退出...")
+            worker_logger.info("[Worker %d] 收到退出信号 (毒丸),正在优雅退出...", real_pid)
             worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
             break
 
@@ -145,7 +159,7 @@ def elastic_worker_loop(task_queue, results, worker_state, pid_placeholder, idle
             res = run_asr_inference(task['path']) if model_type == 'asr' else run_ocr_inference(task['path'])
             results[task['id']] = res
         except KeyboardInterrupt:
-            print(f"[Worker {real_pid}] 推理过程中收到 Ctrl+C 信号，中断并退出...")
+            worker_logger.info("[Worker %d] 推理过程中收到 Ctrl+C 信号,中断并退出...", real_pid)
             worker_state[real_pid] = {'status': 'dead', 'last_active': time.time()}
             break
         except Exception as e:

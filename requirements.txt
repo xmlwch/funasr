@@ -1,6 +1,6 @@
-funasr-onnx
-funasr
-onnxruntime
+funasr-onnx>=1.1.13
+funasr>=1.2.7
+onnxruntime>=1.17.1
 paddlepaddle==3.3.1
 paddleocr==2.9.1
-more_itertools
+more_itertools>=10.3.0
