@@ -97,8 +97,8 @@ class TestStats:
 
     def test_stats_cache_expires_after_ttl(self, monkeypatch):
         """超过 TTL 应重算(返回新对象)"""
-        import main
-        monkeypatch.setattr(main, 'STATS_CACHE_TTL', 0.05)
+        import pool
+        monkeypatch.setattr(pool, 'STATS_CACHE_TTL', 0.05)
         pool = ElasticProcessPool('asr', max_workers=1, idle_timeout=60)
         try:
             s1 = pool.stats()
