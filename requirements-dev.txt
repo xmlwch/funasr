@@ -1,0 +1,4 @@
+# 开发依赖 - 与生产 requirements.txt 分开
+pytest>=7.0
+pytest-cov>=4.0
+pytest-mock>=3.10
