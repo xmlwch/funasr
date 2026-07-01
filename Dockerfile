@@ -4,11 +4,12 @@
 # 不用于运行服务。最终镜像用户从 GitHub Release 下载并自部署。
 #
 # 历史变更:
-#   - v0.9.2 之前:slim-buster(libgl1-mesa-glx) — buster 2024-06 EOL
-#   - v0.9.2:    slim-bookworm + libgl1 + libglx-mesa0 + apt-get clean
+#   - v0.9.2 之前:slim-buster — buster 2024-06 EOL
+#   - v0.9.2:    slim-bookworm + libgl1 + libglx-mesa0 — 产物需 glibc 2.35+
+#   - v0.9.5+:   回到 slim-buster — 产物兼容 glibc 2.28+(CentOS 8 / RHEL 8)
 # ====================================================================
 
-FROM python:3.10-slim-bookworm
+FROM python:3.10-slim-buster
 
 # OCI labels(registry / image scanner 友好)
 LABEL org.opencontainers.image.title="funasr-builder" \
@@ -21,19 +22,18 @@ WORKDIR /build
 
 # ----------------------------------------------------------------
 # 系统依赖 — FunASR / PaddleOCR / torchaudio 需要的 .so
-#   binutils:          strip / ld
-#   libgomp1:          OpenMP(torch 多线程)
-#   libgl1 + libglx-mesa0: bookworm 拆分了 mesa-glx,必须两个都装
-#   libglib2.0-0:      paddle 间接依赖
+#   binutils:        strip / ld
+#   libgomp1:        OpenMP(torch 多线程)
+#   libgl1-mesa-glx: OpenGL(buster 还在用,bookworm 已拆分为 libgl1 + libglx-mesa0)
+#   libglib2.0-0:    paddle 间接依赖
 #   libsm6 / libxext6: cv2 依赖
-#   ffmpeg:            torchaudio 后端
-#   ccache:            paddle 编译期调用,无 .so 但 spec 仍打包它消除告警
+#   ffmpeg:          torchaudio 后端
+#   ccache:          paddle 编译期调用,spec 打包它消除告警
 # ----------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         binutils \
         libgomp1 \
-        libgl1 libglx-mesa0 \
-        libglib2.0-0 \
+        libgl1-mesa-glx libglib2.0-0 \
         libsm6 libxext6 \
         ffmpeg \
         ccache \
