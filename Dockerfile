@@ -30,7 +30,10 @@ WORKDIR /build
 #   ffmpeg:          torchaudio 后端
 #   ccache:          paddle 编译期调用,spec 打包它消除告警
 # ----------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list \
+    && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
         binutils \
         libgomp1 \
         libgl1-mesa-glx libglib2.0-0 \
